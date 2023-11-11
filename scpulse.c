@@ -25,12 +25,12 @@
 #define DEFAULT_VOLUME 0.25;
 #define RING_VOLUME_OFFSET (-0.25) /* FIXME: Changing this doesn't seem to effect the wave at all... */
 
-#define FUEL_RESTORE_RATE 150 /* Liters/s */
-#define MAX_FUEL_LEVEL 100000 /* Liters */
+#define FUEL_RESTORE_RATE 8 /* Liters/s */
+#define MAX_FUEL_LEVEL 100000.0 /* Liters */
 #define MAX_COOLER_TEMP 1400 /* Degrees C */
 #define COOLER_COOL_RATE(x) ((powf((x / MAX_COOLER_TEMP),2) * (MAX_COOLER_TEMP * 0.2)) /* Degrees/s */
 #define MAX_INPUT_POWER 2980 /* Amps */
-#define FUEL_CONSUME_RATE(x) (x/* TODO */)
+#define FUEL_CONSUME_RATE(x) ((-1 * (powf(x*10, 3))) + FUEL_RESTORE_RATE)
 
 /* FIXME: Make sure threaded accesses are safe. Use volatile... */
 static float cooler_temp;
@@ -38,6 +38,8 @@ static float fuel_level;
 static float fuel_rate;
 static float quantum_level;
 static float total_output_power;
+static bool engine_overload;
+static bool update_waveforms;
 
 
 float GuiVerticalSlider(Rectangle bounds, const char *textTop, const char *textBottom, float value, float minValue, float maxValue);
@@ -131,8 +133,8 @@ void draw_gui(void)
 
     /* ============== Fuel Capacity ============== */
     /* <capacity bar> <capacity label (float in liters)> <consumption rate (liters/sec)> */
-    GuiProgressBar((Rectangle){115, 70, 760, 24}, "Fuel", TextFormat("%0.2f", fuel_level), &fuel_level, 0.0, MAX_FUEL_LEVEL);
-    GuiLabel((Rectangle){920, 70, 70, 24}, TextFormat("%2.2f L/s", fuel_rate));
+    GuiProgressBar((Rectangle){115, 70, 760, 24}, "Fuel", TextFormat("%6.0f", fuel_level), &fuel_level, 0.0, MAX_FUEL_LEVEL);
+    GuiLabel((Rectangle){950, 70, 70, 24}, TextFormat("%2.2f L/s", fuel_rate));
 
     /* ================== Input Power ================ */
     /* FIXME: Make conversion functions that convert the percentages and raw frequencies to the display values */
@@ -140,9 +142,12 @@ void draw_gui(void)
     gui_value = GuiVerticalSliderBar((Rectangle){ 40, 150, 34, 192 }, "Amps", TextFormat("%4.0f", waveforms.rootwave_vol * 1675), waveforms.rootwave_vol, 0.0f, 1.0f);
     if (gui_value != waveforms.rootwave_vol)
     {
-	input_power_changed = true;
-	waveforms.rootwave_vol = gui_value;
-	set_root_power(waveforms.rootwave_vol);
+	if (fuel_level > 0)
+	{
+	    input_power_changed = true;
+	    waveforms.rootwave_vol = gui_value;
+	    set_root_power(waveforms.rootwave_vol);
+	}
     }
 
     /* ============= Q-Ring Settings =============== */
@@ -192,11 +197,23 @@ void draw_gui(void)
 
 
     /* ============= Total Power Output  =============== */
+    int c = GuiGetStyle(PROGRESSBAR, BASE_COLOR_PRESSED);
+    bool ovrld = engine_overload; /* Since updates are in another thread, only check once */
+    if (ovrld)
+	GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, 0xff2020ff);
     GuiProgressBar((Rectangle){115, 420, 760, 24}, "Power Output", TextFormat("%0.2f", total_output_power), &total_output_power, 0.0, 1.0);
+    if (ovrld)
+	GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, c);
+
     //total_output_power = 0;
 
 
     EndDrawing();
+}
+
+void update_engine_damage(void)
+{
+    /* Update damage counter bar and add a hefty bump to heat output */
 }
 
 /* Sound rendering function. Sound wave is combined, examined, normalized, and sent to sound card here */
@@ -207,11 +224,8 @@ void data_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_uin
      */
     sine_sources_t  *srcs;
     float	    *output;
-    int		    i, j;
-    #define AVG_BUF_LEN 8000
-    static float    avg_buf[AVG_BUF_LEN];
-    static float    avg;
-    static int	    avg_index;
+    int		    i;
+    float	    max_signal = 0;
 
     srcs = (sine_sources_t *)pDevice->pUserData;
     output = (float *)pOutput;
@@ -225,23 +239,20 @@ void data_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_uin
     {
 	float t = srcs->rootbuf[i] + srcs->qbuf[i] + srcs->rbuf[i] + srcs->sbuf[i];
 	output[i] = t;
-	avg_buf[avg_index] = powf(t, 2);
-	avg_index++;
 
-	if (avg_index == AVG_BUF_LEN)
+	t = fabsf(t);
+	if (t > max_signal)
+	    max_signal = t;
+
+	if (max_signal > 1.0)
 	{
-	    /* FIXME: Maybe need a log scale for the average here... this just isn't working */
-	    for (j=0; j<AVG_BUF_LEN; j++)
-	    {
-		avg += avg_buf[j];
-	    }
-	    avg = sqrtf(avg / AVG_BUF_LEN);
-
-	    total_output_power = avg;
-
-	    avg_index = 0;
-	    avg = 0;
+	    engine_overload = true;
+	    update_engine_damage();
 	}
+	else
+	    engine_overload = false;
+
+	total_output_power = max_signal;
     }
 }
 
@@ -358,11 +369,34 @@ int main(int argc, char *argv[])
     ma_sound_uninit(&snd_clank_s);
 #endif
 
+    /* Init "Game" elements */
+    fuel_level = MAX_FUEL_LEVEL;
+
     GuiLoadStyle(GUI_THEME_RGS);
     while (!WindowShouldClose())
     {
+	float frame_time;
+
+
 	draw_gui();
 	usleep(16666);
+	frame_time = GetFrameTime();
+	fuel_rate = FUEL_CONSUME_RATE(waveforms.rootwave_vol);
+	fuel_level += frame_time * fuel_rate;
+	if (fuel_level < 0)
+	{
+	    fuel_level = 0.0;
+
+	    waveforms.rootwave_vol = 0.0;
+	    set_root_power(0.0);
+
+	    set_q_power(waveforms.qwave_vol * waveforms.rootwave_vol);
+	    set_r_power(waveforms.rwave_vol * waveforms.rootwave_vol);
+	    set_s_power(waveforms.swave_vol * waveforms.rootwave_vol);
+	}
+	else if (fuel_level > MAX_FUEL_LEVEL)
+	    fuel_level = MAX_FUEL_LEVEL;
+
     }
     CloseWindow();
 
