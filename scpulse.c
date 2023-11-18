@@ -6,6 +6,9 @@
 #define RAYGUI_IMPLEMENTATION
 #include <raygui.h>
 
+#define RAYGUI_VERT_SLIDE_IMPLEMENTATION
+#include <raygui_vert_slider.h>
+
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
 
@@ -25,26 +28,39 @@
 #define DEFAULT_VOLUME 0.25;
 #define RING_VOLUME_OFFSET (-0.25) /* FIXME: Changing this doesn't seem to effect the wave at all... */
 
-#define FUEL_RESTORE_RATE 8 /* Liters/s */
+#define FUEL_RESTORE_RATE 50 /* Liters/s */
 #define MAX_FUEL_LEVEL 100000.0 /* Liters */
 #define MAX_COOLER_TEMP 1400 /* Degrees C */
 #define COOLER_COOL_RATE(x) ((powf((x / MAX_COOLER_TEMP),2) * (MAX_COOLER_TEMP * 0.2)) /* Degrees/s */
 #define MAX_INPUT_POWER 2980 /* Amps */
-#define FUEL_CONSUME_RATE(x) ((-1 * (powf(x*10, 3))) + FUEL_RESTORE_RATE)
+#define FUEL_CONSUME_RATE(x) ((-1 * (powf(x*20, 3))) + FUEL_RESTORE_RATE)
 
-/* FIXME: Make sure threaded accesses are safe. Use volatile... */
-static float cooler_temp;
-static float fuel_level;
-static float fuel_rate;
-static float quantum_level;
-static float total_output_power;
-static bool engine_overload;
-static bool update_waveforms;
+typedef struct power_drain_s
+{
+    float rate; /* in watts */
+    float rand; /* rename this - random chance of power draw/peak? */
+} power_drain_t;
 
+typedef struct capacitor_s
+{
 
-float GuiVerticalSlider(Rectangle bounds, const char *textTop, const char *textBottom, float value, float minValue, float maxValue);
-float GuiVerticalSliderBar(Rectangle bounds, const char *textTop, const char *textBottom, float value, float minValue, float maxValue);
-float GuiVerticalSliderPro(Rectangle bounds, const char *textTop, const char *textBottom, float value, float minValue, float maxValue, int sliderHeight);
+    /* Capacitors have:
+	- sizes (small, medium, large)
+	- Quality (low, average, high)
+
+	- frequency tolerance?
+
+	smaller capacitors can't hold as much charge, so they are required to have power drawn from them in order to not over-charge, over-heat, and incur damage
+
+    */
+} capacitor_t;
+
+typedef struct power_tap_s
+{
+    float	    level; /* This is the instantaneous level of input power based on overall power output */
+    capacitor_t	    cap; /* The amount of power available for the drain is stored in the capacitor */
+    power_drain_t   dest;
+} power_tap_t;
 
 typedef struct sine_sources_s
 {
@@ -75,7 +91,29 @@ typedef struct sine_sources_s
     float swave_freq;
 } sine_sources_t;
 
+/* FIXME: Make sure threaded accesses are safe. Use volatile... */
 static sine_sources_t waveforms;
+static float cooler_temp;
+static float fuel_level;
+static float fuel_rate;
+static float quantum_level;
+static float total_output_power;
+static bool engine_overload;
+static bool update_waveforms;
+
+static power_tap_t tap_bat;
+static power_tap_t tap_1;
+static power_tap_t tap_2;
+static power_tap_t tap_3;
+static power_drain_t drain_battery;
+static power_drain_t drain_shields;
+static power_drain_t drain_weapons;
+static power_drain_t drain_thrust;
+
+
+
+
+
 
 void set_root_freq(float freq)
 {
@@ -205,13 +243,19 @@ void draw_gui(void)
     if (ovrld)
 	GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, c);
 
-    //total_output_power = 0;
+
+    /* =========== Power Taps =========== */
+    GuiProgressBar((Rectangle){115, 450, 100, 10}, "Power Taps:", NULL, &tap_bat.level, 0.0, 1.0);
+    GuiProgressBar((Rectangle){235, 450, 200, 10}, NULL, NULL, &tap_1.level, 0.0, 1.0);
+    GuiProgressBar((Rectangle){455, 450, 200, 10}, NULL, NULL, &tap_2.level, 0.0, 1.0);
+    GuiProgressBar((Rectangle){675, 450, 200, 10}, NULL, NULL, &tap_3.level, 0.0, 1.0);
+
 
 
     EndDrawing();
 }
 
-void update_engine_damage(void)
+void damage_engine(void)
 {
     /* Update damage counter bar and add a hefty bump to heat output */
 }
@@ -226,6 +270,10 @@ void data_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_uin
     float	    *output;
     int		    i;
     float	    max_signal = 0;
+    float	    tap_battery;
+    float	    tap_1;
+    float	    tap_2;
+    float	    tap_3;
 
     srcs = (sine_sources_t *)pDevice->pUserData;
     output = (float *)pOutput;
@@ -247,12 +295,74 @@ void data_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_uin
 	if (max_signal > 1.0)
 	{
 	    engine_overload = true;
-	    update_engine_damage();
+	    damage_engine();
 	}
 	else
 	    engine_overload = false;
 
 	total_output_power = max_signal;
+    }
+}
+
+static void update_fuel(void)
+{
+    float frame_time;
+
+    frame_time = GetFrameTime();
+    fuel_rate = FUEL_CONSUME_RATE(waveforms.rootwave_vol);
+    fuel_level += frame_time * fuel_rate;
+    if (fuel_level < 0)
+    {
+	fuel_level = 0.0;
+
+	waveforms.rootwave_vol = 0.0;
+	set_root_power(0.0);
+
+	set_q_power(waveforms.qwave_vol * waveforms.rootwave_vol);
+	set_r_power(waveforms.rwave_vol * waveforms.rootwave_vol);
+	set_s_power(waveforms.swave_vol * waveforms.rootwave_vol);
+    }
+    else if (fuel_level > MAX_FUEL_LEVEL)
+	fuel_level = MAX_FUEL_LEVEL;
+}
+
+static void update_power_taps(void)
+{
+    /* Bottom 10% goes to battery, remaining 90% divided evenly in 3*/
+    if (total_output_power <= 0.1)
+    {
+	tap_bat.level = total_output_power / 0.1;
+	tap_1.level = 0.0;
+	tap_2.level = 0.0;
+	tap_3.level = 0.0;
+    }
+    else if (total_output_power <= 0.4)
+    {
+	tap_bat.level = 1.0;
+	tap_1.level = (total_output_power - 0.1) / 0.3;
+	tap_2.level = 0.0;
+	tap_3.level = 0.0;
+    }
+    else if (total_output_power <= .7)
+    {
+	tap_bat.level = 1.0;
+	tap_1.level = 1.0;
+	tap_2.level = (total_output_power - 0.4) / 0.3;
+	tap_3.level = 0.0;
+    }
+    else if (total_output_power <= 1.0)
+    {
+	tap_bat.level = 1.0;
+	tap_1.level = 1.0;
+	tap_2.level = 1.0;
+	tap_3.level = (total_output_power - 0.7) / 0.3;
+    }
+    else
+    {
+	tap_bat.level = 1.0;
+	tap_1.level = 1.0;
+	tap_2.level = 1.0;
+	tap_3.level = 1.0;
     }
 }
 
@@ -379,24 +489,14 @@ int main(int argc, char *argv[])
 
 
 	draw_gui();
-	usleep(16666);
-	frame_time = GetFrameTime();
-	fuel_rate = FUEL_CONSUME_RATE(waveforms.rootwave_vol);
-	fuel_level += frame_time * fuel_rate;
-	if (fuel_level < 0)
+
+	update_fuel();
+	update_power_taps();
+
 	{
-	    fuel_level = 0.0;
-
-	    waveforms.rootwave_vol = 0.0;
-	    set_root_power(0.0);
-
-	    set_q_power(waveforms.qwave_vol * waveforms.rootwave_vol);
-	    set_r_power(waveforms.rwave_vol * waveforms.rootwave_vol);
-	    set_s_power(waveforms.swave_vol * waveforms.rootwave_vol);
 	}
-	else if (fuel_level > MAX_FUEL_LEVEL)
-	    fuel_level = MAX_FUEL_LEVEL;
 
+	usleep(16666);
     }
     CloseWindow();
 
@@ -408,139 +508,4 @@ int main(int argc, char *argv[])
 }
 
 
-/* The following is copied from Raylib's raygui/examples/custom_sliders/custom_sliders.c
-   It is licenced as follows:
-zlib License
-	
-Copyright (c) 2014-2023 Ramon Santamaria (@raysan5)
-
-This software is provided "as-is", without any express or implied warranty. In no event 
-will the authors be held liable for any damages arising from the use of this software.
-
-Permission is granted to anyone to use this software for any purpose, including commercial 
-applications, and to alter it and redistribute it freely, subject to the following restrictions:
-
-  1. The origin of this software must not be misrepresented; you must not claim that you 
-  wrote the original software. If you use this software in a product, an acknowledgment 
-  in the product documentation would be appreciated but is not required.
-
-  2. Altered source versions must be plainly marked as such, and must not be misrepresented
-  as being the original software.
-
-  3. This notice may not be removed or altered from any source distribution.
-*/
-float GuiVerticalSlider(Rectangle bounds, const char *textTop, const char *textBottom, float value, float minValue, float maxValue)
-{
-    return GuiVerticalSliderPro(bounds, textTop, textBottom, value, minValue, maxValue, GuiGetStyle(SLIDER, SLIDER_WIDTH));
-}
-
-float GuiVerticalSliderBar(Rectangle bounds, const char *textTop, const char *textBottom, float value, float minValue, float maxValue)
-{
-    return GuiVerticalSliderPro(bounds, textTop, textBottom, value, minValue, maxValue, 0);
-}
-
-float GuiVerticalSliderPro(Rectangle bounds, const char *textTop, const char *textBottom, float value, float minValue, float maxValue, int sliderHeight)
-{
-    GuiState state = (GuiState)GuiGetState();
-
-    int sliderValue = (int)(((value - minValue)/(maxValue - minValue)) * (bounds.height - 2 * GuiGetStyle(SLIDER, BORDER_WIDTH)));
-
-    Rectangle slider = {
-        bounds.x + GuiGetStyle(SLIDER, BORDER_WIDTH) + GuiGetStyle(SLIDER, SLIDER_PADDING),
-        bounds.y + bounds.height - sliderValue,
-        bounds.width - 2*GuiGetStyle(SLIDER, BORDER_WIDTH) - 2*GuiGetStyle(SLIDER, SLIDER_PADDING),
-        0.0f,
-    };
-
-    if (sliderHeight > 0)        // Slider
-    {
-        slider.y -= sliderHeight/2;
-        slider.height = (float)sliderHeight;
-    }
-    else if (sliderHeight == 0)  // SliderBar
-    {
-        slider.y -= GuiGetStyle(SLIDER, BORDER_WIDTH);
-        slider.height = (float)sliderValue;
-    }
-    // Update control
-    //--------------------------------------------------------------------
-    if ((state != STATE_DISABLED) && !guiLocked)
-    {
-        Vector2 mousePoint = GetMousePosition();
-
-        if (CheckCollisionPointRec(mousePoint, bounds))
-        {
-            if (IsMouseButtonDown(MOUSE_LEFT_BUTTON))
-            {
-                state = STATE_PRESSED;
-
-                // Get equivalent value and slider position from mousePoint.x
-                float normalizedValue = (bounds.y + bounds.height - mousePoint.y - (float)(sliderHeight / 2)) / (bounds.height - (float)sliderHeight);
-                value = (maxValue - minValue) * normalizedValue + minValue;
-
-                if (sliderHeight > 0) slider.y = mousePoint.y - slider.height / 2;  // Slider
-                else if (sliderHeight == 0)                                          // SliderBar
-                {
-                    slider.y = mousePoint.y;
-                    slider.height = bounds.y + bounds.height - slider.y - GuiGetStyle(SLIDER, BORDER_WIDTH);
-                }
-            }
-            else state = STATE_FOCUSED;
-        }
-
-        if (value > maxValue) value = maxValue;
-        else if (value < minValue) value = minValue;
-    }
-
-
-    // Bar limits check
-    if (sliderHeight > 0)        // Slider
-    {
-        if (slider.y < (bounds.y + GuiGetStyle(SLIDER, BORDER_WIDTH))) slider.y = bounds.y + GuiGetStyle(SLIDER, BORDER_WIDTH);
-        else if ((slider.y + slider.height) >= (bounds.y + bounds.height)) slider.y = bounds.y + bounds.height - slider.height - GuiGetStyle(SLIDER, BORDER_WIDTH);
-    }
-    else if (sliderHeight == 0)  // SliderBar
-    {
-        if (slider.y < (bounds.y + GuiGetStyle(SLIDER, BORDER_WIDTH)))
-        {
-            slider.y = bounds.y + GuiGetStyle(SLIDER, BORDER_WIDTH);
-            slider.height = bounds.height - 2*GuiGetStyle(SLIDER, BORDER_WIDTH);
-        }
-    }
-
-    //--------------------------------------------------------------------
-    // Draw control
-    //--------------------------------------------------------------------
-    GuiDrawRectangle(bounds, GuiGetStyle(SLIDER, BORDER_WIDTH), Fade(GetColor(GuiGetStyle(SLIDER, BORDER + (state*3))), guiAlpha), Fade(GetColor(GuiGetStyle(SLIDER, (state != STATE_DISABLED)?  BASE_COLOR_NORMAL : BASE_COLOR_DISABLED)), guiAlpha));
-
-    // Draw slider internal bar (depends on state)
-    if ((state == STATE_NORMAL) || (state == STATE_PRESSED)) GuiDrawRectangle(slider, 0, BLANK, Fade(GetColor(GuiGetStyle(SLIDER, BASE_COLOR_PRESSED)), guiAlpha));
-    else if (state == STATE_FOCUSED) GuiDrawRectangle(slider, 0, BLANK, Fade(GetColor(GuiGetStyle(SLIDER, TEXT_COLOR_FOCUSED)), guiAlpha));
-
-    // Draw top/bottom text if provided
-    if (textTop != NULL)
-    {
-        Rectangle textBounds = { 0 };
-        textBounds.width = (float)GetTextWidth(textTop);
-        textBounds.height = (float)GuiGetStyle(DEFAULT, TEXT_SIZE);
-        textBounds.x = bounds.x + bounds.width/2 - textBounds.width/2;
-        textBounds.y = bounds.y - textBounds.height - GuiGetStyle(SLIDER, TEXT_PADDING);
-
-        GuiDrawText(textTop, textBounds, TEXT_ALIGN_RIGHT, Fade(GetColor(GuiGetStyle(SLIDER, TEXT + (state*3))), guiAlpha));
-    }
-
-    if (textBottom != NULL)
-    {
-        Rectangle textBounds = { 0 };
-        textBounds.width = (float)GetTextWidth(textBottom);
-        textBounds.height = (float)GuiGetStyle(DEFAULT, TEXT_SIZE);
-        textBounds.x = bounds.x + bounds.width/2 - textBounds.width/2;
-        textBounds.y = bounds.y + bounds.height + GuiGetStyle(SLIDER, TEXT_PADDING);
-
-        GuiDrawText(textBottom, textBounds, TEXT_ALIGN_LEFT, Fade(GetColor(GuiGetStyle(SLIDER, TEXT + (state*3))), guiAlpha));
-    }
-    //--------------------------------------------------------------------
-
-    return value;
-}
 
