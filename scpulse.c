@@ -1,5 +1,6 @@
 #include <raylib.h>
 #include <stdio.h>
+#include <string.h>
 #include <stddef.h>
 #include <unistd.h>
 
@@ -26,7 +27,6 @@
 #define GUI_THEME_RGS "resources/style_cyber.rgs"
 
 #define DEFAULT_VOLUME 0.25;
-#define RING_VOLUME_OFFSET (-0.25) /* FIXME: Changing this doesn't seem to effect the wave at all... */
 
 #define FUEL_RESTORE_RATE 50 /* Liters/s */
 #define MAX_FUEL_LEVEL 100000.0 /* Liters */
@@ -35,15 +35,44 @@
 #define MAX_INPUT_POWER 2980 /* Amps */
 #define FUEL_CONSUME_RATE(x) ((-1 * (powf(x*20, 3))) + FUEL_RESTORE_RATE)
 
+#define HEALTH_2_COLOR(h) (0x000000ff | (0x10 << 24) | ((127 + ((uint8_t)(h * 100))) << 16) | (0x65 << 8) )
+/* TODO: Make this adjust with charge value */
+#define CHARGE_2_COLOR(c, max) (0x000000ff | (0xee << 24) | (0xc0 << 16) | (0x10 << 8) )
+
+#define POWER_TAP_DEST_STRING "Thrusters;Shields;Weapons"
+typedef enum {
+    TAP_DEST_THRUST = 0,
+    TAP_DEST_SHIELD = 1,
+    TAP_DEST_WEAPON = 2,
+} tap_dest_e;
+
+#define CAPACITOR_SIZE_STRING "Small (10)\nMedium (20)\nLarge (50)"
+typedef enum {
+    CAP_SIZE_SMALL = 0,
+    CAP_SIZE_MED = 1,
+    CAP_SIZE_LARGE = 2,
+} capacitor_size_e;
+
+#define CAPACITOR_GRADE_STRING "Consumer\nProfessional\nMilitary"
+typedef enum {
+    CAP_GRADE_CON = 0,
+    CAP_GRADE_PRO = 1,
+    CAP_GRADE_MIL = 2,
+} capacitor_grade_e;
+
 typedef struct power_drain_s
 {
-    float rate; /* in watts */
-    float rand; /* rename this - random chance of power draw/peak? */
+    float rate;
+    float spike_probability; /* random chance of power draw/peak */
 } power_drain_t;
+
+
+static const float cap_max_charges[] = {10.0, 20.0, 50.0}; /* Indexed by capacitor_size_e */
+
+/* TODO: Add otehr tables for heat tolerance, damage multipliers, etc... */
 
 typedef struct capacitor_s
 {
-
     /* Capacitors have:
 	- sizes (small, medium, large)
 	- Quality (low, average, high)
@@ -53,13 +82,28 @@ typedef struct capacitor_s
 	smaller capacitors can't hold as much charge, so they are required to have power drawn from them in order to not over-charge, over-heat, and incur damage
 
     */
+    float		health;
+    float		charge;
+    float		max_charge;
+
+
+    capacitor_grade_e	grade;
+    capacitor_size_e	size;
 } capacitor_t;
 
 typedef struct power_tap_s
 {
-    float	    level; /* This is the instantaneous level of input power based on overall power output */
+    float	    level; /* This is the instantaneous level of input power based on overall power output. Range: 0 - 1.0 */
     capacitor_t	    cap; /* The amount of power available for the drain is stored in the capacitor */
-    power_drain_t   dest;
+    power_drain_t   *drain;
+
+    /* TODO: The power taps should be implemented such that power tap 1 at 100% power adds less power to its capacitor than tap 2 at 100%. Same for 2 and 3 */
+    float	    charge_mult;
+
+    /* Gui data */
+    tap_dest_e selected_dest;
+    bool edit_mode;
+
 } power_tap_t;
 
 typedef struct sine_sources_s
@@ -110,55 +154,71 @@ static power_drain_t drain_shields;
 static power_drain_t drain_weapons;
 static power_drain_t drain_thrust;
 
+static bool quitting;
 
 
+static void capacitor_reset(capacitor_t *cap)
+{
+    cap->charge = 0.0;
+    cap->health = 1.0;
+    cap->max_charge = cap_max_charges[(int)cap->size];
 
+}
 
-
-void set_root_freq(float freq)
+static void set_root_freq(float freq)
 {
     ma_waveform_set_frequency(&waveforms.rootwave, freq);
 }
 
-void set_root_power(float power)
+static void set_root_power(float power)
 {
     ma_waveform_set_amplitude(&waveforms.rootwave, (double)power);
 }
 
-void set_q_freq(float freq)
+static void set_q_freq(float freq)
 {
     ma_waveform_set_frequency(&waveforms.qwave, freq);
 }
 
-void set_q_power(float power)
+static void set_q_power(float power)
 {
     ma_waveform_set_amplitude(&waveforms.qwave, (double)power);
 }
 
-void set_r_freq(float freq)
+static void set_r_freq(float freq)
 {
     ma_waveform_set_frequency(&waveforms.rwave, freq);
 }
 
-void set_r_power(float power)
+static void set_r_power(float power)
 {
     ma_waveform_set_amplitude(&waveforms.rwave, (double)power);
 }
 
-void set_s_freq(float freq)
+static void set_s_freq(float freq)
 {
     ma_waveform_set_frequency(&waveforms.swave, freq);
 }
 
-void set_s_power(float power)
+static void set_s_power(float power)
 {
     ma_waveform_set_amplitude(&waveforms.swave, (double)power);
+}
+
+static void randomize_drains(void)
+{
+    drain_thrust.spike_probability = GetRandomValue(1, 60) / 1000.0;
+    drain_shields.spike_probability = GetRandomValue(1, 80) / 1000.0;
+    drain_weapons.spike_probability = GetRandomValue(1, 200) / 1000.0;
 }
 
 void draw_gui(void)
 {
     float	gui_value;
+    int		c;
     bool	input_power_changed = false;
+    capacitor_grade_e last_grade;
+    capacitor_size_e	last_size;
 
     BeginDrawing();
     ClearBackground(BLACK);
@@ -171,6 +231,10 @@ void draw_gui(void)
 
     /* ============== Fuel Capacity ============== */
     /* <capacity bar> <capacity label (float in liters)> <consumption rate (liters/sec)> */
+    if (GuiButton((Rectangle){20, 70, 55, 24}, "Refuel"))
+    {
+	fuel_level = MAX_FUEL_LEVEL;
+    }
     GuiProgressBar((Rectangle){115, 70, 760, 24}, "Fuel", TextFormat("%6.0f", fuel_level), &fuel_level, 0.0, MAX_FUEL_LEVEL);
     GuiLabel((Rectangle){950, 70, 70, 24}, TextFormat("%2.2f L/s", fuel_rate));
 
@@ -199,6 +263,7 @@ void draw_gui(void)
     gui_value = GuiVerticalSliderBar((Rectangle){ 320, 150, 34, 192 }, "Power", TextFormat("%0.2f", waveforms.qwave_vol), waveforms.qwave_vol, 0.0f, 1.0f);
     if (input_power_changed || gui_value != waveforms.qwave_vol)
     {
+	/* TODO: The more power on each ring, the heat generation goes up exponentially */
 	waveforms.qwave_vol = gui_value;
 	set_q_power(waveforms.qwave_vol * waveforms.rootwave_vol);
     }
@@ -235,7 +300,7 @@ void draw_gui(void)
 
 
     /* ============= Total Power Output  =============== */
-    int c = GuiGetStyle(PROGRESSBAR, BASE_COLOR_PRESSED);
+    c = GuiGetStyle(PROGRESSBAR, BASE_COLOR_PRESSED);
     bool ovrld = engine_overload; /* Since updates are in another thread, only check once */
     if (ovrld)
 	GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, 0xff2020ff);
@@ -244,11 +309,119 @@ void draw_gui(void)
 	GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, c);
 
 
+
+
+    /* ============= Capacitor 1 ============= */
+    GuiGroupBox((Rectangle){235, 490, 200, 220}, "Capacitor 1");
+
+    if (tap_1.edit_mode) GuiLock();
+
+    GuiLabel((Rectangle){275, 500, 80, 16}, "Size");
+    last_size = tap_1.cap.size;
+    GuiToggleGroup((Rectangle){245, 520, 80, 25}, CAPACITOR_SIZE_STRING, (int *)&tap_1.cap.size);
+    tap_1.cap.max_charge = cap_max_charges[(int)tap_1.cap.size];
+
+    GuiLabel((Rectangle){365, 500, 80, 16}, "Grade");
+    last_grade = tap_1.cap.grade;
+    GuiToggleGroup((Rectangle){345, 520, 80, 25}, CAPACITOR_GRADE_STRING, (int *)&tap_1.cap.grade);
+
+    if (last_size != tap_1.cap.size || last_grade != tap_1.cap.grade)
+	capacitor_reset(&tap_1.cap);
+
+    if (tap_1.edit_mode) GuiUnlock();
+
+    c = GuiGetStyle(PROGRESSBAR, BASE_COLOR_PRESSED);
+    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, HEALTH_2_COLOR(tap_1.cap.health));
+    GuiProgressBar((Rectangle){285, 620, 110, 20}, "Health", TextFormat("%2.2f", tap_1.cap.health), &tap_1.cap.health, 0.0, 1.0);
+    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, CHARGE_2_COLOR(tap_1.cap.charge, tap_1.cap.max_charge));
+    GuiProgressBar((Rectangle){285, 650, 110, 30}, "Charge", TextFormat("%2.2f", tap_1.cap.charge), &tap_1.cap.charge, 0.0, tap_1.cap.max_charge);
+    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, c);
+
+
+
+    /* ============= Capacitor 2 ============= */
+    GuiGroupBox((Rectangle){455, 490, 200, 220}, "Capacitor 2");
+
+    if (tap_2.edit_mode) GuiLock();
+
+    GuiLabel((Rectangle){495, 500, 80, 16}, "Size");
+    last_size = tap_2.cap.size;
+    GuiToggleGroup((Rectangle){475, 520, 80, 25}, CAPACITOR_SIZE_STRING, (int *)&tap_2.cap.size);
+    tap_2.cap.max_charge = cap_max_charges[(int)tap_2.cap.size];
+
+    GuiLabel((Rectangle){585, 500, 80, 16}, "Grade");
+    last_grade = tap_2.cap.grade;
+    GuiToggleGroup((Rectangle){565, 520, 80, 25}, CAPACITOR_GRADE_STRING, (int *)&tap_2.cap.grade);
+
+    if (last_size != tap_2.cap.size || last_grade != tap_2.cap.grade)
+	capacitor_reset(&tap_2.cap);
+
+    if (tap_2.edit_mode) GuiUnlock();
+
+    c = GuiGetStyle(PROGRESSBAR, BASE_COLOR_PRESSED);
+    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, HEALTH_2_COLOR(tap_2.cap.health));
+    GuiProgressBar((Rectangle){505, 620, 110, 20}, "Health", TextFormat("%2.2f", tap_2.cap.health), &tap_2.cap.health, 0.0, 1.0);
+    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, CHARGE_2_COLOR(tap_2.cap.charge, tap_2.cap.max_charge));
+    GuiProgressBar((Rectangle){505, 650, 110, 30}, "Charge", TextFormat("%2.2f", tap_2.cap.charge), &tap_2.cap.charge, 0.0, tap_2.cap.max_charge);
+    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, c);
+
+
+
+    /* ============= Capacitor 3 ============= */
+    GuiGroupBox((Rectangle){675, 490, 200, 220}, "Capacitor 3");
+
+    if (tap_3.edit_mode) GuiLock();
+
+    GuiLabel((Rectangle){715, 500, 80, 16}, "Size");
+    last_size = tap_3.cap.size;
+    GuiToggleGroup((Rectangle){695, 520, 80, 25}, CAPACITOR_SIZE_STRING, (int *)&tap_3.cap.size);
+    tap_3.cap.max_charge = cap_max_charges[(int)tap_3.cap.size];
+
+    GuiLabel((Rectangle){805, 500, 80, 16}, "Grade");
+    last_grade = tap_3.cap.grade;
+    GuiToggleGroup((Rectangle){785, 520, 80, 25}, CAPACITOR_GRADE_STRING, (int *)&tap_3.cap.grade);
+
+    if (last_size != tap_3.cap.size || last_grade != tap_3.cap.grade)
+	capacitor_reset(&tap_3.cap);
+
+    if (tap_3.edit_mode) GuiUnlock();
+
+    c = GuiGetStyle(PROGRESSBAR, BASE_COLOR_PRESSED);
+    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, HEALTH_2_COLOR(tap_3.cap.health));
+    GuiProgressBar((Rectangle){725, 620, 110, 20}, "Health", TextFormat("%2.2f", tap_3.cap.health), &tap_3.cap.health, 0.0, 1.0);
+    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, CHARGE_2_COLOR(tap_3.cap.charge, tap_3.cap.max_charge));
+    GuiProgressBar((Rectangle){725, 650, 110, 30}, "Charge", TextFormat("%2.2f", tap_3.cap.charge), &tap_3.cap.charge, 0.0, tap_3.cap.max_charge);
+    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, c);
+
+
+
     /* =========== Power Taps =========== */
+    /* Dropdowns need to be drawn after anything they might cover, so do these last */
     GuiProgressBar((Rectangle){115, 450, 100, 10}, "Power Taps:", NULL, &tap_bat.level, 0.0, 1.0);
     GuiProgressBar((Rectangle){235, 450, 200, 10}, NULL, NULL, &tap_1.level, 0.0, 1.0);
     GuiProgressBar((Rectangle){455, 450, 200, 10}, NULL, NULL, &tap_2.level, 0.0, 1.0);
     GuiProgressBar((Rectangle){675, 450, 200, 10}, NULL, NULL, &tap_3.level, 0.0, 1.0);
+
+    GuiLabel((Rectangle){50, 465, 80, 15}, "Routed to:");
+    GuiLabel((Rectangle){115, 465, 100, 15}, "      Battery");
+    if (GuiDropdownBox((Rectangle){235, 465, 200, 15}, POWER_TAP_DEST_STRING, (int *)&tap_1.selected_dest, tap_1.edit_mode))
+	tap_1.edit_mode = !tap_1.edit_mode;
+    if (GuiDropdownBox((Rectangle){455, 465, 200, 15}, POWER_TAP_DEST_STRING, (int *)&tap_2.selected_dest, tap_2.edit_mode))
+	tap_2.edit_mode = !tap_2.edit_mode;
+    if (GuiDropdownBox((Rectangle){675, 465, 200, 15}, POWER_TAP_DEST_STRING, (int *)&tap_3.selected_dest, tap_3.edit_mode))
+	tap_3.edit_mode = !tap_3.edit_mode;
+
+
+
+    /* =========== Power Drains ========== */
+    GuiLabel((Rectangle){125, WIN_HEIGHT -15, 85, 10}, "Power Usage:");
+    GuiProgressBar((Rectangle){295, WIN_HEIGHT - 15, 135, 10}, "Thrusters", NULL, &drain_thrust.rate, 0.0, 1.0);
+    GuiProgressBar((Rectangle){515, WIN_HEIGHT - 15, 135, 10}, "Shields", NULL, &drain_shields.rate, 0.0, 1.0);
+    GuiProgressBar((Rectangle){735, WIN_HEIGHT - 15, 135, 10}, "Weapons", NULL, &drain_weapons.rate, 0.0, 1.0);
+    if (GuiButton((Rectangle){900, WIN_HEIGHT - 18, 80, 16}, "Randomize"))
+    {
+	randomize_drains();
+    }
 
 
 
@@ -326,6 +499,58 @@ static void update_fuel(void)
 	fuel_level = MAX_FUEL_LEVEL;
 }
 
+static power_drain_t *tap_sel_to_drain(tap_dest_e d)
+{
+    switch(d)
+    {
+    case TAP_DEST_THRUST:
+	return &drain_thrust;
+    case TAP_DEST_SHIELD:
+	return &drain_shields;
+    case TAP_DEST_WEAPON:
+	return &drain_weapons;
+    default:
+	printf("bad item selection\n");
+	quitting = true;
+    }
+    return NULL;
+}
+
+static void update_drains(void)
+{
+    /* Thrusters get a pretty sinusoidal power usage, with a low degree of variance. */
+    static float thrust_freq;
+    if (thrust_freq == 0.0)
+	thrust_freq = 1.0 * (GetRandomValue(1, 100) / 100.0);
+
+    drain_thrust.rate = (sin(GetTime() * thrust_freq) + 1) / 2.0;
+    if ((GetRandomValue(1, 100) / 100.0) <= drain_thrust.spike_probability)
+    {
+	thrust_freq = 1.0 * (GetRandomValue(1, 100) / 100.0);
+    }
+
+
+    /* Shields get large spikes that gradually drain away */
+    if (GetRandomValue(1, 100) / 100.0 <= drain_shields.spike_probability)
+    {
+	drain_shields.rate += (GetRandomValue(1, 30) / 100.0);
+    }
+    drain_shields.rate -= drain_shields.rate * 0.1;
+    if (drain_shields.rate > 1.0) drain_shields.rate = 1.0;
+    if (drain_shields.rate < 0) drain_shields.rate = 0;
+
+
+    /* Weapons gradually, quickly, build up, then drop to nothing */
+	drain_weapons.rate += drain_shields.rate * 0.3;
+	if (GetRandomValue(1, 100) / 100.0 <= drain_weapons.spike_probability)
+	{
+	    drain_weapons.rate -= 0.8;
+	}
+	if (drain_weapons.rate > 1.0) drain_weapons.rate = 1.0;
+	if (drain_weapons.rate < 0) drain_weapons.rate = 0;
+
+}
+
 static void update_power_taps(void)
 {
     /* Bottom 10% goes to battery, remaining 90% divided evenly in 3*/
@@ -364,6 +589,43 @@ static void update_power_taps(void)
 	tap_2.level = 1.0;
 	tap_3.level = 1.0;
     }
+
+    //tap_bat.drain = &drain_battery;
+
+    tap_1.drain = tap_sel_to_drain(tap_1.selected_dest);
+    tap_2.drain = tap_sel_to_drain(tap_2.selected_dest);
+    tap_3.drain = tap_sel_to_drain(tap_3.selected_dest);
+    if (!tap_1.drain || !tap_2.drain || !tap_3.drain)
+	return;
+
+    return;
+}
+
+static void fill_capacitor(power_tap_t *tap, float strength)
+{
+    float avg;
+    int index;
+    int max;
+    int i;
+
+    tap->cap.charge += strength * (tap->level / cap_max_charges[(int)tap->cap.size]);
+    if (tap->cap.charge > tap->cap.max_charge)
+	tap->cap.charge = tap->cap.max_charge;
+}
+
+static void drain_capacitor(power_tap_t *tap)
+{
+}
+
+static void update_capacitors(void)
+{
+    fill_capacitor(&tap_1, 0.1);
+    fill_capacitor(&tap_2, 0.2);
+    fill_capacitor(&tap_3, 0.3);
+
+    drain_capacitor(&tap_1);
+    drain_capacitor(&tap_2);
+    drain_capacitor(&tap_3);
 }
 
 int main(int argc, char *argv[])
@@ -481,9 +743,33 @@ int main(int argc, char *argv[])
 
     /* Init "Game" elements */
     fuel_level = MAX_FUEL_LEVEL;
+    tap_bat.drain = &drain_battery;
+    tap_1.selected_dest = TAP_DEST_THRUST;
+    tap_1.drain = tap_sel_to_drain(tap_1.selected_dest);
+    tap_1.cap.size = CAP_SIZE_SMALL;
+    tap_1.cap.grade = CAP_GRADE_CON;
+    capacitor_reset(&tap_1.cap);
+
+    tap_2.selected_dest = TAP_DEST_SHIELD;
+    tap_2.drain = tap_sel_to_drain(tap_2.selected_dest);
+    tap_2.cap.size = CAP_SIZE_SMALL;
+    tap_2.cap.grade = CAP_GRADE_CON;
+    capacitor_reset(&tap_2.cap);
+
+    tap_3.selected_dest = TAP_DEST_WEAPON;
+    tap_3.drain = tap_sel_to_drain(tap_3.selected_dest);
+    tap_3.cap.size = CAP_SIZE_SMALL;
+    tap_3.cap.grade = CAP_GRADE_CON;
+    capacitor_reset(&tap_3.cap);
+
+    drain_battery.rate = 0.5;
+    drain_shields.rate = 0.5;
+    drain_weapons.rate = 0.5;
+    drain_thrust.rate = 0.5;
+    randomize_drains();
 
     GuiLoadStyle(GUI_THEME_RGS);
-    while (!WindowShouldClose())
+    while (!WindowShouldClose() && !quitting)
     {
 	float frame_time;
 
@@ -491,7 +777,9 @@ int main(int argc, char *argv[])
 	draw_gui();
 
 	update_fuel();
+	update_drains();
 	update_power_taps();
+	update_capacitors();
 
 	{
 	}
