@@ -60,12 +60,8 @@ typedef enum {
     CAP_GRADE_MIL = 2,
 } capacitor_grade_e;
 
-typedef struct power_drain_s
-{
-    float rate;
-    float spike_probability; /* random chance of power draw/peak */
-} power_drain_t;
 
+#define MAX_BAT_CHARGE 100.0
 
 static const float cap_max_charges[] = {10.0, 20.0, 50.0}; /* Indexed by capacitor_size_e */
 
@@ -90,6 +86,13 @@ typedef struct capacitor_s
     capacitor_grade_e	grade;
     capacitor_size_e	size;
 } capacitor_t;
+
+typedef struct power_drain_s
+{
+    float   rate;
+    float   spike_probability; /* random chance of power draw/peak */
+    bool    enabled;
+} power_drain_t;
 
 typedef struct power_tap_s
 {
@@ -149,7 +152,6 @@ static power_tap_t tap_bat;
 static power_tap_t tap_1;
 static power_tap_t tap_2;
 static power_tap_t tap_3;
-static power_drain_t drain_battery;
 static power_drain_t drain_shields;
 static power_drain_t drain_weapons;
 static power_drain_t drain_thrust;
@@ -224,7 +226,7 @@ void draw_gui(void)
     ClearBackground(BLACK);
 
     /* ============== TITLE ============== */
-    DrawText("SC Pulse Engine POC Demo", (WIN_WIDTH >> 1) - 140, 5, 20, LIGHTGRAY);
+    DrawText("SC Pulse Engine PoC Demo", (WIN_WIDTH >> 1) - 140, 5, 20, LIGHTGRAY);
 
     /* ================ Cooler Capacity ================= */
     GuiProgressBar((Rectangle){115, 30, 760, 24}, "Cooler temp", TextFormat("%0.2f", cooler_temp), &cooler_temp, 0.0, MAX_COOLER_TEMP);
@@ -308,6 +310,11 @@ void draw_gui(void)
     if (ovrld)
 	GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, c);
 
+
+    /* ============== Battery ================ */
+    GuiSetState(STATE_DISABLED);
+    GuiVerticalSliderBar((Rectangle){135, 500, 60, 200}, "Charge", TextFormat("%0.1f", tap_bat.cap.charge), tap_bat.cap.charge, 0.0f, MAX_BAT_CHARGE);
+    GuiSetState(STATE_NORMAL);
 
 
 
@@ -415,9 +422,13 @@ void draw_gui(void)
 
     /* =========== Power Drains ========== */
     GuiLabel((Rectangle){125, WIN_HEIGHT -15, 85, 10}, "Power Usage:");
-    GuiProgressBar((Rectangle){295, WIN_HEIGHT - 15, 135, 10}, "Thrusters", NULL, &drain_thrust.rate, 0.0, 1.0);
-    GuiProgressBar((Rectangle){515, WIN_HEIGHT - 15, 135, 10}, "Shields", NULL, &drain_shields.rate, 0.0, 1.0);
-    GuiProgressBar((Rectangle){735, WIN_HEIGHT - 15, 135, 10}, "Weapons", NULL, &drain_weapons.rate, 0.0, 1.0);
+    GuiProgressBar((Rectangle){295, WIN_HEIGHT - 15, 115, 10}, "Thrusters", NULL, &drain_thrust.rate, 0.0, 1.0);
+    GuiProgressBar((Rectangle){505, WIN_HEIGHT - 15, 115, 10}, "Shields", NULL, &drain_shields.rate, 0.0, 1.0);
+    GuiProgressBar((Rectangle){735, WIN_HEIGHT - 15, 115, 10}, "Weapons", NULL, &drain_weapons.rate, 0.0, 1.0);
+    GuiCheckBox((Rectangle){415, WIN_HEIGHT - 18, 15, 15}, NULL, &drain_thrust.enabled);
+    GuiCheckBox((Rectangle){625, WIN_HEIGHT - 18, 15, 15}, NULL, &drain_shields.enabled);
+    GuiCheckBox((Rectangle){855, WIN_HEIGHT - 18, 15, 15}, NULL, &drain_weapons.enabled);
+
     if (GuiButton((Rectangle){900, WIN_HEIGHT - 18, 80, 16}, "Randomize"))
     {
 	randomize_drains();
@@ -523,24 +534,36 @@ static void update_drains(void)
     if (thrust_freq == 0.0)
 	thrust_freq = 1.0 * (GetRandomValue(1, 100) / 100.0);
 
-    drain_thrust.rate = (sin(GetTime() * thrust_freq) + 1) / 2.0;
-    if ((GetRandomValue(1, 100) / 100.0) <= drain_thrust.spike_probability)
+    if (drain_thrust.enabled)
     {
-	thrust_freq = 1.0 * (GetRandomValue(1, 100) / 100.0);
+	drain_thrust.rate = (sin(GetTime() * thrust_freq) + 1) / 2.0;
+	if ((GetRandomValue(1, 100) / 100.0) <= drain_thrust.spike_probability)
+	{
+	    thrust_freq = 1.0 * (GetRandomValue(1, 100) / 100.0);
+	}
     }
+    else
+	drain_thrust.rate = 0;
 
 
     /* Shields get large spikes that gradually drain away */
-    if (GetRandomValue(1, 100) / 100.0 <= drain_shields.spike_probability)
+    if (drain_shields.enabled)
     {
-	drain_shields.rate += (GetRandomValue(1, 30) / 100.0);
+	if (GetRandomValue(1, 100) / 100.0 <= drain_shields.spike_probability)
+	{
+	    drain_shields.rate += (GetRandomValue(1, 30) / 100.0);
+	}
+	drain_shields.rate -= drain_shields.rate * 0.1;
+	if (drain_shields.rate > 1.0) drain_shields.rate = 1.0;
+	if (drain_shields.rate < 0) drain_shields.rate = 0;
     }
-    drain_shields.rate -= drain_shields.rate * 0.1;
-    if (drain_shields.rate > 1.0) drain_shields.rate = 1.0;
-    if (drain_shields.rate < 0) drain_shields.rate = 0;
+    else
+	drain_shields.rate = 0;
 
 
     /* Weapons gradually, quickly, build up, then drop to nothing */
+    if (drain_weapons.enabled)
+    {
 	drain_weapons.rate += drain_shields.rate * 0.3;
 	if (GetRandomValue(1, 100) / 100.0 <= drain_weapons.spike_probability)
 	{
@@ -548,6 +571,9 @@ static void update_drains(void)
 	}
 	if (drain_weapons.rate > 1.0) drain_weapons.rate = 1.0;
 	if (drain_weapons.rate < 0) drain_weapons.rate = 0;
+    }
+    else
+	drain_weapons.rate = 0;
 
 }
 
@@ -590,11 +616,12 @@ static void update_power_taps(void)
 	tap_3.level = 1.0;
     }
 
-    //tap_bat.drain = &drain_battery;
 
     tap_1.drain = tap_sel_to_drain(tap_1.selected_dest);
     tap_2.drain = tap_sel_to_drain(tap_2.selected_dest);
     tap_3.drain = tap_sel_to_drain(tap_3.selected_dest);
+
+    /* FIXME: What was this for? */
     if (!tap_1.drain || !tap_2.drain || !tap_3.drain)
 	return;
 
@@ -615,6 +642,21 @@ static void fill_capacitor(power_tap_t *tap, float strength)
 
 static void drain_capacitor(power_tap_t *tap)
 {
+    /* This assumes that fill_capacitor has been called this frame */
+
+    power_drain_t *d = tap->drain;
+    int num_connected = 0; /* The number of drains that this tap shares */
+
+    if (tap_1.drain == tap->drain) num_connected++;
+    if (tap_2.drain == tap->drain) num_connected++;
+    if (tap_3.drain == tap->drain) num_connected++;
+
+    if (num_connected == 0)
+    {
+    }
+
+
+
 }
 
 static void update_capacitors(void)
@@ -626,6 +668,13 @@ static void update_capacitors(void)
     drain_capacitor(&tap_1);
     drain_capacitor(&tap_2);
     drain_capacitor(&tap_3);
+}
+
+static void update_battery(void)
+{
+    tap_bat.cap.charge += 0.03 * (tap_bat.level / MAX_BAT_CHARGE);
+    if (tap_bat.cap.charge > MAX_BAT_CHARGE)
+	tap_bat.cap.charge = MAX_BAT_CHARGE;
 }
 
 int main(int argc, char *argv[])
@@ -743,7 +792,6 @@ int main(int argc, char *argv[])
 
     /* Init "Game" elements */
     fuel_level = MAX_FUEL_LEVEL;
-    tap_bat.drain = &drain_battery;
     tap_1.selected_dest = TAP_DEST_THRUST;
     tap_1.drain = tap_sel_to_drain(tap_1.selected_dest);
     tap_1.cap.size = CAP_SIZE_SMALL;
@@ -762,10 +810,14 @@ int main(int argc, char *argv[])
     tap_3.cap.grade = CAP_GRADE_CON;
     capacitor_reset(&tap_3.cap);
 
-    drain_battery.rate = 0.5;
+    tap_bat.cap.charge = 50.0;
+
     drain_shields.rate = 0.5;
     drain_weapons.rate = 0.5;
     drain_thrust.rate = 0.5;
+    drain_shields.enabled = true;
+    drain_weapons.enabled = true;
+    drain_thrust.enabled = true;
     randomize_drains();
 
     GuiLoadStyle(GUI_THEME_RGS);
@@ -779,6 +831,7 @@ int main(int argc, char *argv[])
 	update_fuel();
 	update_drains();
 	update_power_taps();
+	update_battery();
 	update_capacitors();
 
 	{
