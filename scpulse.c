@@ -92,6 +92,7 @@ typedef struct power_drain_s
     float   rate;
     float   spike_probability; /* random chance of power draw/peak */
     bool    enabled;
+    float   factor; /* multiplier for how quickly the source gets drained */
 } power_drain_t;
 
 typedef struct power_tap_s
@@ -145,6 +146,7 @@ static float fuel_level;
 static float fuel_rate;
 static float quantum_level;
 static float total_output_power;
+static float engine_health;
 static bool engine_overload;
 static bool update_waveforms;
 
@@ -210,8 +212,8 @@ static void set_s_power(float power)
 static void randomize_drains(void)
 {
     drain_thrust.spike_probability = GetRandomValue(1, 60) / 1000.0;
-    drain_shields.spike_probability = GetRandomValue(1, 80) / 1000.0;
-    drain_weapons.spike_probability = GetRandomValue(1, 200) / 1000.0;
+    drain_shields.spike_probability = GetRandomValue(1, 180) / 1000.0;
+    drain_weapons.spike_probability = GetRandomValue(1, 600) / 1000.0;
 }
 
 void draw_gui(void)
@@ -242,8 +244,8 @@ void draw_gui(void)
 
     /* ================== Input Power ================ */
     /* FIXME: Make conversion functions that convert the percentages and raw frequencies to the display values */
-    GuiGroupBox((Rectangle){ 20, 120, 200, 280 }, "Input Power");
-    gui_value = GuiVerticalSliderBar((Rectangle){ 40, 150, 34, 192 }, "Amps", TextFormat("%4.0f", waveforms.rootwave_vol * 1675), waveforms.rootwave_vol, 0.0f, 1.0f);
+    GuiGroupBox((Rectangle){ 120, 120, 100, 255 }, "Input Power");
+    gui_value = GuiVerticalSliderBar((Rectangle){ 155, 150, 34, 192 }, "Amps", TextFormat("%4.0f", waveforms.rootwave_vol * 1675), waveforms.rootwave_vol, 0.0f, 1.0f);
     if (gui_value != waveforms.rootwave_vol)
     {
 	if (fuel_level > 0)
@@ -255,7 +257,7 @@ void draw_gui(void)
     }
 
     /* ============= Q-Ring Settings =============== */
-    GuiGroupBox((Rectangle){ 240, 120, 200, 280 }, "Q-Ring");
+    GuiGroupBox((Rectangle){ 240, 120, 200, 255 }, "Q-Ring");
     gui_value = GuiVerticalSlider((Rectangle){ 260, 150, 34, 192 }, "Freq", TextFormat("%2.2f", waveforms.qwave_freq), waveforms.qwave_freq, ROOT_FREQ + 0.07, ROOT_FREQ + Q_VARIANCE);
     if (gui_value != waveforms.qwave_freq)
     {
@@ -271,7 +273,7 @@ void draw_gui(void)
     }
 
     /* ============= R-Ring Settings =============== */
-    GuiGroupBox((Rectangle){ 460, 120, 200, 280 }, "R-Ring");
+    GuiGroupBox((Rectangle){ 460, 120, 200, 255 }, "R-Ring");
     gui_value = GuiVerticalSlider((Rectangle){ 480, 150, 34, 192 }, "Freq", TextFormat("%2.2f", waveforms.rwave_freq), waveforms.rwave_freq, ROOT_FREQ - R_VARIANCE, ROOT_FREQ - 0.11);
     if (gui_value != waveforms.rwave_freq)
     {
@@ -286,8 +288,10 @@ void draw_gui(void)
     }
 
     /* ============= S-Ring Settings =============== */
-    GuiGroupBox((Rectangle){ 680, 120, 200, 280 }, "S-Ring");
+    GuiGroupBox((Rectangle){ 680, 120, 200, 255 }, "S-Ring");
     gui_value = GuiVerticalSlider((Rectangle){ 700, 150, 34, 192 }, "Freq", TextFormat("%2.2f", waveforms.swave_freq), waveforms.swave_freq, ROOT_FREQ - S_VARIANCE, ROOT_FREQ + S_VARIANCE);
+    if (gui_value >= ROOT_FREQ && gui_value < ROOT_FREQ + 0.02) gui_value = ROOT_FREQ + 0.02;
+    if (gui_value > ROOT_FREQ - 0.02  && gui_value < ROOT_FREQ) gui_value = ROOT_FREQ - 0.02;
     if (gui_value != waveforms.swave_freq)
     {
 	waveforms.swave_freq = gui_value;
@@ -301,12 +305,22 @@ void draw_gui(void)
     }
 
 
+    /* ============== Engine Health ============== */
+    c = GuiGetStyle(PROGRESSBAR, BASE_COLOR_PRESSED);
+    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, HEALTH_2_COLOR(engine_health));
+    GuiProgressBar((Rectangle){115, 390, 760, 15}, "Engine Health", TextFormat("%0.2f", engine_health), &engine_health, 0.0, 1.0);
+    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, c);
+    if (GuiButton((Rectangle){925, 390, 85, 15}, "Repair"))
+	engine_health = 1.0;
+
+
+
     /* ============= Total Power Output  =============== */
     c = GuiGetStyle(PROGRESSBAR, BASE_COLOR_PRESSED);
     bool ovrld = engine_overload; /* Since updates are in another thread, only check once */
     if (ovrld)
 	GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, 0xff2020ff);
-    GuiProgressBar((Rectangle){115, 420, 760, 24}, "Power Output", TextFormat("%0.2f", total_output_power), &total_output_power, 0.0, 1.0);
+    GuiProgressBar((Rectangle){115, 418, 760, 24}, "Power Output", TextFormat("%0.2f", total_output_power), &total_output_power, 0.0, 1.0);
     if (ovrld)
 	GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, c);
 
@@ -442,6 +456,9 @@ void draw_gui(void)
 void damage_engine(void)
 {
     /* Update damage counter bar and add a hefty bump to heat output */
+    engine_health -= 0.000002;
+    if (engine_health < 0)
+	engine_health = 0;
 }
 
 /* Sound rendering function. Sound wave is combined, examined, normalized, and sent to sound card here */
@@ -486,6 +503,19 @@ void data_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_uin
 
 	total_output_power = max_signal;
     }
+}
+
+static void update_engine(void)
+{
+    if (engine_health <= 0)
+    {
+	waveforms.rootwave_vol = 0.0;
+	set_root_power(0.0);
+	set_q_power(waveforms.qwave_vol * waveforms.rootwave_vol);
+	set_r_power(waveforms.rwave_vol * waveforms.rootwave_vol);
+	set_s_power(waveforms.swave_vol * waveforms.rootwave_vol);
+    }
+
 }
 
 static void update_fuel(void)
@@ -564,10 +594,10 @@ static void update_drains(void)
     /* Weapons gradually, quickly, build up, then drop to nothing */
     if (drain_weapons.enabled)
     {
-	drain_weapons.rate += drain_shields.rate * 0.3;
+	drain_weapons.rate += 0.01 + (drain_weapons.rate * 0.1);
 	if (GetRandomValue(1, 100) / 100.0 <= drain_weapons.spike_probability)
 	{
-	    drain_weapons.rate -= 0.8;
+	    drain_weapons.rate -= 0.2;
 	}
 	if (drain_weapons.rate > 1.0) drain_weapons.rate = 1.0;
 	if (drain_weapons.rate < 0) drain_weapons.rate = 0;
@@ -635,27 +665,46 @@ static void fill_capacitor(power_tap_t *tap, float strength)
     int max;
     int i;
 
+    /* FIXME: Higher grade capacitors need to fill faster than lower grade */
     tap->cap.charge += strength * (tap->level / cap_max_charges[(int)tap->cap.size]);
     if (tap->cap.charge > tap->cap.max_charge)
 	tap->cap.charge = tap->cap.max_charge;
+}
+
+static void drain_battery(power_tap_t *tap)
+{
+    tap_bat.cap.charge -= (tap->drain->rate * tap->drain->factor);
+    if (tap_bat.cap.charge < 0)
+	tap_bat.cap.charge = 0;
 }
 
 static void drain_capacitor(power_tap_t *tap)
 {
     /* This assumes that fill_capacitor has been called this frame */
 
-    power_drain_t *d = tap->drain;
-    int num_connected = 0; /* The number of drains that this tap shares */
+    power_drain_t   *d = tap->drain;
+    float	    rate;
+    int		    num_connected = 0; /* The number of drains that this tap shares */
 
-    if (tap_1.drain == tap->drain) num_connected++;
-    if (tap_2.drain == tap->drain) num_connected++;
-    if (tap_3.drain == tap->drain) num_connected++;
+    if (tap_1.drain == tap->drain && tap_1.cap.charge > 0) num_connected++;
+    if (tap_2.drain == tap->drain && tap_2.cap.charge > 0) num_connected++;
+    if (tap_3.drain == tap->drain && tap_3.cap.charge > 0) num_connected++;
 
     if (num_connected == 0)
     {
+	/* Drain battery instead */
+	drain_battery(tap);
     }
+    else
+    {
+	rate = d->rate / num_connected;
+	rate *= d->factor;
+	tap->cap.charge -= rate;
+	if (tap->cap.charge < 0)
+	    tap->cap.charge = 0;
 
 
+    }
 
 }
 
@@ -791,6 +840,7 @@ int main(int argc, char *argv[])
 #endif
 
     /* Init "Game" elements */
+    engine_health = 1.0;
     fuel_level = MAX_FUEL_LEVEL;
     tap_1.selected_dest = TAP_DEST_THRUST;
     tap_1.drain = tap_sel_to_drain(tap_1.selected_dest);
@@ -815,9 +865,14 @@ int main(int argc, char *argv[])
     drain_shields.rate = 0.5;
     drain_weapons.rate = 0.5;
     drain_thrust.rate = 0.5;
-    drain_shields.enabled = true;
-    drain_weapons.enabled = true;
-    drain_thrust.enabled = true;
+
+    drain_shields.factor = 0.09;
+    drain_weapons.factor = 0.1;
+    drain_thrust.factor = 0.01;
+
+    drain_shields.enabled = false;
+    drain_weapons.enabled = false;
+    drain_thrust.enabled = false;
     randomize_drains();
 
     GuiLoadStyle(GUI_THEME_RGS);
@@ -828,6 +883,8 @@ int main(int argc, char *argv[])
 
 	draw_gui();
 
+
+	update_engine();
 	update_fuel();
 	update_drains();
 	update_power_taps();
