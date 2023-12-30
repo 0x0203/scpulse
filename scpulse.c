@@ -756,8 +756,12 @@ static void fill_capacitor(power_tap_t *tap, float strength)
 static void drain_battery(power_tap_t *tap)
 {
     tap_bat.cap.charge -= (tap->drain->rate * tap->drain->factor);
+    cooler_add_heat(tap->drain->rate * 8.3, true);
     if (tap_bat.cap.charge < 0)
+    {
+	tap->drain->enabled = 0;
 	tap_bat.cap.charge = 0;
+    }
 }
 
 static void drain_capacitor(power_tap_t *tap)
