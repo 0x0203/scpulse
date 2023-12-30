@@ -727,6 +727,7 @@ static void fill_capacitor(power_tap_t *tap, float strength)
     int index;
     int max;
     int i;
+    float f = tap->level * cap_grade_dmg_factor[(int)tap->cap.grade];
 
     if (tap->cap.health > 0)
     {
@@ -738,7 +739,8 @@ static void fill_capacitor(power_tap_t *tap, float strength)
 
     if (tap->cap.charge > tap->cap.max_charge)
     {
-	tap->cap.health -= 0.0001 * tap->level * cap_grade_dmg_factor[(int)tap->cap.grade];
+	tap->cap.health -= 0.0001 * tap->level * f;
+	cooler_add_heat(1.0 * f, true);
 	if (tap->cap.health < 0)
 	    tap->cap.health = 0;
 
@@ -747,6 +749,8 @@ static void fill_capacitor(power_tap_t *tap, float strength)
 	else
 	    tap->cap.charge = tap->cap.max_charge;
     }
+    else
+	cooler_add_heat(0.1 * f, true);
 }
 
 static void drain_battery(power_tap_t *tap)
