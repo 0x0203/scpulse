@@ -143,7 +143,7 @@ typedef struct sine_sources_s
 
 /* FIXME: Make sure threaded accesses are safe. Use volatile... */
 static sine_sources_t waveforms;
-static float cooler_temp;
+volatile float cooler_temp;
 static float fuel_level;
 static float fuel_rate;
 static float quantum_level;
@@ -161,6 +161,13 @@ static power_drain_t drain_weapons;
 static power_drain_t drain_thrust;
 
 static bool quitting;
+
+/* Function declarations */
+static void cooler_add_heat(float d, bool damage);
+
+
+
+
 
 
 static void capacitor_reset(capacitor_t *cap)
@@ -235,7 +242,7 @@ void draw_gui(void)
     /* ================ Cooler Capacity ================= */
     c = GuiGetStyle(PROGRESSBAR, BASE_COLOR_PRESSED);
     GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, TEMP_TO_COLOR(cooler_temp));
-    GuiProgressBar((Rectangle){115, 30, 760, 24}, "Cooler temp", TextFormat("%0.2f", cooler_temp), &cooler_temp, 0.0, MAX_COOLER_TEMP);
+    GuiProgressBar((Rectangle){115, 30, 760, 24}, "Cooler temp", TextFormat("%0.2f", cooler_temp), (float *)&cooler_temp, 0.0, MAX_COOLER_TEMP);
     GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, c);
 
     /* ============== Fuel Capacity ============== */
@@ -468,6 +475,8 @@ void audio_damage_engine(void)
     engine_health -= 0.000002;
     if (engine_health < 0)
 	engine_health = 0;
+
+    cooler_add_heat(0.01, false);
 }
 
 /* Sound rendering function. Sound wave is combined, examined, normalized, and sent to sound card here */
@@ -534,19 +543,27 @@ static void damage_engine(float f)
 	engine_health = 0;
 }
 
-static void cooler_add_heat(float d)
+static void cooler_add_heat(float d, bool damage)
 {
     cooler_temp += d;
 
-    cooler_temp -= COOLER_COOL_RATE(cooler_temp);
+    if (damage)
+	cooler_temp -= COOLER_COOL_RATE(cooler_temp);
+    else /* Called from  audio thread */
+    {
+	cooler_temp -= COOLER_COOL_RATE(cooler_temp) / MY_SAMPLE_RATE;
+    }
     if (cooler_temp < 0)
 	cooler_temp = 0;
 
     if (cooler_temp > MAX_COOLER_TEMP)
     {
-	damage_engine(0.0001 * (cooler_temp - MAX_COOLER_TEMP));
+	if (damage)
+	    damage_engine(0.0001 * (cooler_temp - MAX_COOLER_TEMP));
+
 	cooler_temp = MAX_COOLER_TEMP;
     }
+
 }
 
 static void update_engine_heat(void)
@@ -560,7 +577,7 @@ static void update_engine_heat(void)
     f += POWER_TO_TEMP(waveforms.swave_vol) * 0.2;
 
     f *= waveforms.rootwave_vol;
-    cooler_add_heat(f/12);
+    cooler_add_heat(f/5, true);
 }
 
 static void update_fuel(void)
