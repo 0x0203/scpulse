@@ -37,8 +37,7 @@
 #define POWER_TO_TEMP(x) (powf(x*33, 2)) /* 0 < x < 1.0 */
 
 #define HEALTH_TO_COLOR(h) (0x000000ff | (0x10 << 24) | ((127 + ((uint8_t)(h * 100))) << 16) | (0x65 << 8) )
-/* TODO: Make this adjust with charge value */
-#define CHARGE_TO_COLOR(c, max) (0x000000ff | (0xee << 24) | (0xc0 << 16) | (0x10 << 8) )
+#define CHARGE_TO_COLOR(c, max) (0x000000ff | (c >= (max - 0.006) ? (0xff << 24) : (0x40 << 24)) | (c >= (max - 0.006) ? (0x10 << 16) : (0x33 << 16)) | (c >= (max - 0.006) ? (0x10 << 8) : (0xc9 << 8)) )
 #define TEMP_TO_COLOR(temp)	((0x000000ff) | ((0xff & (uint8_t)((temp / MAX_COOLER_TEMP) * 255)) << 24) | (0x20 << 0x10) | ((temp >= MAX_COOLER_TEMP ? 0x30 : 0x80) << 8))
 
 #define POWER_TAP_DEST_STRING "Thrusters;Shields;Weapons"
@@ -66,6 +65,8 @@ typedef enum {
 #define MAX_BAT_CHARGE 100.0
 
 static const float cap_max_charges[] = {10.0, 20.0, 50.0}; /* Indexed by capacitor_size_e */
+static const float cap_grade_chrg_rate[] = {1.0, 2.0, 3.0}; /* Indexed by capacitor_grade_e */
+static const float cap_grade_dmg_factor[] = {3.0, 2.0, 1.0}; /* Indexed by capacitor_grade_e */
 
 /* TODO: Add otehr tables for heat tolerance, damage multipliers, etc... */
 
@@ -727,10 +728,25 @@ static void fill_capacitor(power_tap_t *tap, float strength)
     int max;
     int i;
 
-    /* FIXME: Higher grade capacitors need to fill faster than lower grade */
-    tap->cap.charge += strength * (tap->level / cap_max_charges[(int)tap->cap.size]);
+    if (tap->cap.health > 0)
+    {
+	tap->cap.charge +=  strength *
+			    (tap->level / cap_max_charges[(int)tap->cap.size]) *
+			    cap_grade_chrg_rate[(int)tap->cap.grade] *
+			    tap->cap.health;
+    }
+
     if (tap->cap.charge > tap->cap.max_charge)
-	tap->cap.charge = tap->cap.max_charge;
+    {
+	tap->cap.health -= 0.0001 * tap->level * cap_grade_dmg_factor[(int)tap->cap.grade];
+	if (tap->cap.health < 0)
+	    tap->cap.health = 0;
+
+	if (tap->cap.health == 0)
+	    tap->cap.charge = 0;
+	else
+	    tap->cap.charge = tap->cap.max_charge;
+    }
 }
 
 static void drain_battery(power_tap_t *tap)
@@ -772,13 +788,14 @@ static void drain_capacitor(power_tap_t *tap)
 
 static void update_capacitors(void)
 {
+    drain_capacitor(&tap_1);
+    drain_capacitor(&tap_2);
+    drain_capacitor(&tap_3);
+
     fill_capacitor(&tap_1, 0.1);
     fill_capacitor(&tap_2, 0.2);
     fill_capacitor(&tap_3, 0.3);
 
-    drain_capacitor(&tap_1);
-    drain_capacitor(&tap_2);
-    drain_capacitor(&tap_3);
 }
 
 static void update_battery(void)
