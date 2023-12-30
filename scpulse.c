@@ -31,13 +31,15 @@
 #define FUEL_RESTORE_RATE 50 /* Liters/s */
 #define MAX_FUEL_LEVEL 100000.0 /* Liters */
 #define MAX_COOLER_TEMP 1400 /* Degrees C */
-#define COOLER_COOL_RATE(x) ((powf((x / MAX_COOLER_TEMP),2) * (MAX_COOLER_TEMP * 0.2)) /* Degrees/s */
+#define COOLER_COOL_RATE(x) ((powf((x / MAX_COOLER_TEMP), 1.2) * (MAX_COOLER_TEMP * 0.01))) /* Degrees/s */
 #define MAX_INPUT_POWER 2980 /* Amps */
 #define FUEL_CONSUME_RATE(x) ((-1 * (powf(x*20, 3))) + FUEL_RESTORE_RATE)
+#define POWER_TO_TEMP(x) (powf(x*33, 2)) /* 0 < x < 1.0 */
 
-#define HEALTH_2_COLOR(h) (0x000000ff | (0x10 << 24) | ((127 + ((uint8_t)(h * 100))) << 16) | (0x65 << 8) )
+#define HEALTH_TO_COLOR(h) (0x000000ff | (0x10 << 24) | ((127 + ((uint8_t)(h * 100))) << 16) | (0x65 << 8) )
 /* TODO: Make this adjust with charge value */
-#define CHARGE_2_COLOR(c, max) (0x000000ff | (0xee << 24) | (0xc0 << 16) | (0x10 << 8) )
+#define CHARGE_TO_COLOR(c, max) (0x000000ff | (0xee << 24) | (0xc0 << 16) | (0x10 << 8) )
+#define TEMP_TO_COLOR(temp)	((0x000000ff) | ((0xff & (uint8_t)((temp / MAX_COOLER_TEMP) * 255)) << 24) | (0x20 << 0x10) | ((temp >= MAX_COOLER_TEMP ? 0x30 : 0x80) << 8))
 
 #define POWER_TAP_DEST_STRING "Thrusters;Shields;Weapons"
 typedef enum {
@@ -231,7 +233,10 @@ void draw_gui(void)
     DrawText("SC Pulse Engine PoC Demo", (WIN_WIDTH >> 1) - 140, 5, 20, LIGHTGRAY);
 
     /* ================ Cooler Capacity ================= */
+    c = GuiGetStyle(PROGRESSBAR, BASE_COLOR_PRESSED);
+    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, TEMP_TO_COLOR(cooler_temp));
     GuiProgressBar((Rectangle){115, 30, 760, 24}, "Cooler temp", TextFormat("%0.2f", cooler_temp), &cooler_temp, 0.0, MAX_COOLER_TEMP);
+    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, c);
 
     /* ============== Fuel Capacity ============== */
     /* <capacity bar> <capacity label (float in liters)> <consumption rate (liters/sec)> */
@@ -307,7 +312,7 @@ void draw_gui(void)
 
     /* ============== Engine Health ============== */
     c = GuiGetStyle(PROGRESSBAR, BASE_COLOR_PRESSED);
-    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, HEALTH_2_COLOR(engine_health));
+    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, HEALTH_TO_COLOR(engine_health));
     GuiProgressBar((Rectangle){115, 390, 760, 15}, "Engine Health", TextFormat("%0.2f", engine_health), &engine_health, 0.0, 1.0);
     GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, c);
     if (GuiButton((Rectangle){925, 390, 85, 15}, "Repair"))
@@ -352,9 +357,9 @@ void draw_gui(void)
     if (tap_1.edit_mode) GuiUnlock();
 
     c = GuiGetStyle(PROGRESSBAR, BASE_COLOR_PRESSED);
-    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, HEALTH_2_COLOR(tap_1.cap.health));
+    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, HEALTH_TO_COLOR(tap_1.cap.health));
     GuiProgressBar((Rectangle){285, 620, 110, 20}, "Health", TextFormat("%2.2f", tap_1.cap.health), &tap_1.cap.health, 0.0, 1.0);
-    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, CHARGE_2_COLOR(tap_1.cap.charge, tap_1.cap.max_charge));
+    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, CHARGE_TO_COLOR(tap_1.cap.charge, tap_1.cap.max_charge));
     GuiProgressBar((Rectangle){285, 650, 110, 30}, "Charge", TextFormat("%2.2f", tap_1.cap.charge), &tap_1.cap.charge, 0.0, tap_1.cap.max_charge);
     GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, c);
 
@@ -380,9 +385,9 @@ void draw_gui(void)
     if (tap_2.edit_mode) GuiUnlock();
 
     c = GuiGetStyle(PROGRESSBAR, BASE_COLOR_PRESSED);
-    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, HEALTH_2_COLOR(tap_2.cap.health));
+    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, HEALTH_TO_COLOR(tap_2.cap.health));
     GuiProgressBar((Rectangle){505, 620, 110, 20}, "Health", TextFormat("%2.2f", tap_2.cap.health), &tap_2.cap.health, 0.0, 1.0);
-    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, CHARGE_2_COLOR(tap_2.cap.charge, tap_2.cap.max_charge));
+    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, CHARGE_TO_COLOR(tap_2.cap.charge, tap_2.cap.max_charge));
     GuiProgressBar((Rectangle){505, 650, 110, 30}, "Charge", TextFormat("%2.2f", tap_2.cap.charge), &tap_2.cap.charge, 0.0, tap_2.cap.max_charge);
     GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, c);
 
@@ -408,9 +413,9 @@ void draw_gui(void)
     if (tap_3.edit_mode) GuiUnlock();
 
     c = GuiGetStyle(PROGRESSBAR, BASE_COLOR_PRESSED);
-    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, HEALTH_2_COLOR(tap_3.cap.health));
+    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, HEALTH_TO_COLOR(tap_3.cap.health));
     GuiProgressBar((Rectangle){725, 620, 110, 20}, "Health", TextFormat("%2.2f", tap_3.cap.health), &tap_3.cap.health, 0.0, 1.0);
-    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, CHARGE_2_COLOR(tap_3.cap.charge, tap_3.cap.max_charge));
+    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, CHARGE_TO_COLOR(tap_3.cap.charge, tap_3.cap.max_charge));
     GuiProgressBar((Rectangle){725, 650, 110, 30}, "Charge", TextFormat("%2.2f", tap_3.cap.charge), &tap_3.cap.charge, 0.0, tap_3.cap.max_charge);
     GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, c);
 
@@ -453,8 +458,12 @@ void draw_gui(void)
     EndDrawing();
 }
 
-void damage_engine(void)
+void audio_damage_engine(void)
 {
+    /* This is called from the audio processing thread, which means it happens thousands of times per second.
+     * It is not suitable for use in the main thread.
+     */
+
     /* Update damage counter bar and add a hefty bump to heat output */
     engine_health -= 0.000002;
     if (engine_health < 0)
@@ -496,7 +505,7 @@ void data_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_uin
 	if (max_signal > 1.0)
 	{
 	    engine_overload = true;
-	    damage_engine();
+	    audio_damage_engine();
 	}
 	else
 	    engine_overload = false;
@@ -516,6 +525,42 @@ static void update_engine(void)
 	set_s_power(waveforms.swave_vol * waveforms.rootwave_vol);
     }
 
+}
+
+static void damage_engine(float f)
+{
+    engine_health -= f;
+    if (engine_health < 0)
+	engine_health = 0;
+}
+
+static void cooler_add_heat(float d)
+{
+    cooler_temp += d;
+
+    cooler_temp -= COOLER_COOL_RATE(cooler_temp);
+    if (cooler_temp < 0)
+	cooler_temp = 0;
+
+    if (cooler_temp > MAX_COOLER_TEMP)
+    {
+	damage_engine(0.0001 * (cooler_temp - MAX_COOLER_TEMP));
+	cooler_temp = MAX_COOLER_TEMP;
+    }
+}
+
+static void update_engine_heat(void)
+{
+    float f;
+
+    f = waveforms.rootwave_vol;
+
+    f += POWER_TO_TEMP(waveforms.qwave_vol) * 0.4;
+    f += POWER_TO_TEMP(waveforms.rwave_vol) * 0.3;
+    f += POWER_TO_TEMP(waveforms.swave_vol) * 0.2;
+
+    f *= waveforms.rootwave_vol;
+    cooler_add_heat(f/12);
 }
 
 static void update_fuel(void)
@@ -885,6 +930,7 @@ int main(int argc, char *argv[])
 
 
 	update_engine();
+	update_engine_heat();
 	update_fuel();
 	update_drains();
 	update_power_taps();
