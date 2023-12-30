@@ -577,7 +577,7 @@ static void update_engine_heat(void)
     f += POWER_TO_TEMP(waveforms.swave_vol) * 0.2;
 
     f *= waveforms.rootwave_vol;
-    cooler_add_heat(f/5, true);
+    cooler_add_heat(f/12, true);
 }
 
 static void update_fuel(void)
