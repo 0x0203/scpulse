@@ -223,7 +223,7 @@ static void randomize_drains(void)
 {
     drain_thrust.spike_probability = GetRandomValue(1, 60) / 1000.0;
     drain_shields.spike_probability = GetRandomValue(1, 180) / 1000.0;
-    drain_weapons.spike_probability = GetRandomValue(1, 600) / 1000.0;
+    drain_weapons.spike_probability = GetRandomValue(1, 100) / 1000.0;
 }
 
 void draw_gui(void)
@@ -657,11 +657,23 @@ static void update_drains(void)
     /* Weapons gradually, quickly, build up, then drop to nothing */
     if (drain_weapons.enabled)
     {
-	drain_weapons.rate += 0.01 + (drain_weapons.rate * 0.1);
-	if (GetRandomValue(1, 100) / 100.0 <= drain_weapons.spike_probability)
+	static int weapons_charging;
+
+	if (weapons_charging || GetRandomValue(1,100) / 100.0 <= drain_weapons.spike_probability)
 	{
+	    weapons_charging++;
+	}
+	if (weapons_charging > 60 || GetRandomValue(1,100)/100.0 < drain_weapons.spike_probability)
+	{
+	    weapons_charging = 0;
 	    drain_weapons.rate -= 0.2;
 	}
+
+	if (weapons_charging)
+	    drain_weapons.rate += 0.01 + (drain_weapons.rate * 0.1);
+	else
+	    drain_weapons.rate -= 0.2;
+
 	if (drain_weapons.rate > 1.0) drain_weapons.rate = 1.0;
 	if (drain_weapons.rate < 0) drain_weapons.rate = 0;
     }
@@ -793,6 +805,15 @@ static void drain_capacitor(power_tap_t *tap)
     }
 
 }
+
+/* TODO: Tweak power drains to not drain so quickly from the capacitors */
+/* TODO: Give capacitors over-charge limits so that they can stay at or above their max charge by a certain level/voltage before incuring damage
+ *	 Even short periods of not fully charging drastically reduced damage potential */
+/* TODO: Implement power delivered progress bars below Power Usage (change to Power Requested) to show how much power is actually getting to the
+ *	 thrusters/shields/weapons. Make it so that power delivered is less if it's coming from batteries. */
+/* TODO: Add a route to battery option for the power taps */
+/* TODO: Check over temp applies damage */
+/* TODO: Tune and balance */
 
 static void update_capacitors(void)
 {
@@ -953,9 +974,9 @@ int main(int argc, char *argv[])
     drain_weapons.rate = 0.5;
     drain_thrust.rate = 0.5;
 
-    drain_shields.factor = 0.09;
-    drain_weapons.factor = 0.1;
-    drain_thrust.factor = 0.01;
+    drain_shields.factor = 0.04;
+    drain_weapons.factor = 0.01;
+    drain_thrust.factor = 0.0078;
 
     drain_shields.enabled = false;
     drain_weapons.enabled = false;
