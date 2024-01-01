@@ -44,7 +44,7 @@
 	    (c > full ? (c >= (max - 0.006) ? (0x10 << 16) : (((uint8_t)(((1.0 - (max - c) / (max - full))) * 0x40) + 0x10) << 16)) : (0x33 << 16) )   |	    \
 	    (c > full ? (c >= (max - 0.006) ? (0x10 << 8)  : (((uint8_t)((0.0 + ((max - c) / (max - full))) * 0xc0) + 0x30) << 8))  : (0xc9 << 8)  ) )
 
-#define TEMP_TO_COLOR(temp)	((0x000000ff) | ((0xff & (uint8_t)((temp / MAX_COOLER_TEMP) * 255)) << 24) | (0x20 << 0x10) | ((temp >= MAX_COOLER_TEMP ? 0x30 : 0x80) << 8))
+#define TEMP_TO_COLOR(temp)	((0x000000ff) | ((0xff & (uint8_t)(((temp) / MAX_COOLER_TEMP) * 255)) << 24) | (0x20 << 0x10) | (((temp) >= MAX_COOLER_TEMP ? 0x30 : 0x80) << 8))
 
 #define POWER_TAP_DEST_STRING "Thrusters;Shields;Weapons"
 typedef enum {
@@ -172,7 +172,7 @@ static power_drain_t drain_thrust;
 static bool quitting;
 
 /* Function declarations */
-static void cooler_add_heat(float d, bool damage);
+static void cooler_add_heat(float d);
 
 
 
@@ -251,8 +251,8 @@ void draw_gui(void)
 
     /* ================ Cooler Capacity ================= */
     c = GuiGetStyle(PROGRESSBAR, BASE_COLOR_PRESSED);
-    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, TEMP_TO_COLOR(cooler_temp));
-    GuiProgressBar((Rectangle){115, 30, 760, 24}, "Cooler temp", TextFormat("%0.2f", cooler_temp), (float *)&cooler_temp, 0.0, MAX_COOLER_TEMP);
+    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, TEMP_TO_COLOR(cooler_temp >= MAX_COOLER_TEMP ? MAX_COOLER_TEMP : cooler_temp));
+    GuiProgressBar((Rectangle){115, 30, 760, 24}, "Cooler temp", TextFormat("%0.2f", cooler_temp > MAX_COOLER_TEMP ? MAX_COOLER_TEMP : cooler_temp), (float *)&cooler_temp, 0.0, MAX_COOLER_TEMP);
     GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, c);
 
     /* ============== Fuel Capacity ============== */
@@ -262,7 +262,7 @@ void draw_gui(void)
 	fuel_level = MAX_FUEL_LEVEL;
     }
     GuiProgressBar((Rectangle){115, 70, 760, 24}, "Fuel", TextFormat("%6.0f", fuel_level), &fuel_level, 0.0, MAX_FUEL_LEVEL);
-    GuiLabel((Rectangle){950, 70, 70, 24}, TextFormat("%2.2f L/s", fuel_rate));
+    GuiLabel((Rectangle){950, 70, 70, 24}, TextFormat("%2.2f L/s", fuel_level >= MAX_FUEL_LEVEL ? 0.0 : fuel_rate));
 
     /* ================== Input Power ================ */
     /* FIXME: Make conversion functions that convert the percentages and raw frequencies to the display values */
@@ -495,7 +495,7 @@ void audio_damage_engine(void)
     if (engine_health < 0)
 	engine_health = 0;
 
-    cooler_add_heat(0.01, false);
+    cooler_add_heat(0.01);
 }
 
 /* Sound rendering function. Sound wave is combined, examined, normalized, and sent to sound card here */
@@ -562,33 +562,23 @@ static void damage_engine(float f)
 	engine_health = 0;
 }
 
-static void cooler_add_heat(float d, bool damage)
+static void cooler_add_heat(float d)
 {
     cooler_temp += d;
+}
 
-    if (damage)
-	cooler_temp -= COOLER_COOL_RATE(cooler_temp);
-    else /* Called from  audio thread */
-    {
-	cooler_temp -= COOLER_COOL_RATE(cooler_temp) / MY_SAMPLE_RATE;
-    }
+static void cooler_dissipate_heat(void)
+{
+    cooler_temp -= COOLER_COOL_RATE(cooler_temp);
+
     if (cooler_temp < 0)
 	cooler_temp = 0;
-
-    if (cooler_temp > MAX_COOLER_TEMP)
-    {
-	if (damage)
-	    damage_engine(0.0001 * (cooler_temp - MAX_COOLER_TEMP));
-
-	cooler_temp = MAX_COOLER_TEMP;
-    }
-
 }
 
 static void update_engine_heat(void)
 {
     float f;
-
+    /* FIXME: When engine stops, still need to add head from capacitors */
     f = waveforms.rootwave_vol;
 
     f += POWER_TO_TEMP(waveforms.qwave_vol) * 0.4;
@@ -596,7 +586,12 @@ static void update_engine_heat(void)
     f += POWER_TO_TEMP(waveforms.swave_vol) * 0.2;
 
     f *= waveforms.rootwave_vol;
-    cooler_add_heat(f/12, true);
+    cooler_add_heat(f/8);
+    cooler_dissipate_heat();
+    if (cooler_temp > MAX_COOLER_TEMP)
+    {
+	    damage_engine(0.0001 * (cooler_temp - MAX_COOLER_TEMP));
+    }
 }
 
 static void update_fuel(void)
@@ -770,7 +765,7 @@ static void fill_capacitor(power_tap_t *tap, float strength)
     if (tap->cap.charge > tap->cap.max_charge)
     {
 	tap->cap.health -= 0.0001 * tap->level * f;
-	cooler_add_heat(1.0 * f, true);
+	cooler_add_heat(1.0 * f);
 	if (tap->cap.health < 0)
 	    tap->cap.health = 0;
 
@@ -780,13 +775,13 @@ static void fill_capacitor(power_tap_t *tap, float strength)
 	    tap->cap.charge = tap->cap.max_charge;
     }
     else
-	cooler_add_heat(0.1 * f, true);
+	cooler_add_heat(0.1 * (tap->cap.charge / tap->cap.max_charge) * f);
 }
 
 static void drain_battery(power_tap_t *tap)
 {
     tap_bat.cap.charge -= (tap->drain->rate * tap->drain->factor);
-    cooler_add_heat(tap->drain->rate * 8.3, true);
+    cooler_add_heat(tap->drain->rate * 8.3);
     if (tap_bat.cap.charge < 0)
     {
 	tap->drain->enabled = 0;
@@ -1021,12 +1016,12 @@ int main(int argc, char *argv[])
 
 
 	update_engine();
-	update_engine_heat();
 	update_fuel();
 	update_drains();
 	update_power_taps();
 	update_battery();
 	update_capacitors();
+	update_engine_heat();
 
 	{
 	}
