@@ -37,7 +37,13 @@
 #define POWER_TO_TEMP(x) (powf(x*33, 2)) /* 0 < x < 1.0 */
 
 #define HEALTH_TO_COLOR(h) (0x000000ff | (0x10 << 24) | ((127 + ((uint8_t)(h * 100))) << 16) | (0x65 << 8) )
-#define CHARGE_TO_COLOR(c, max) (0x000000ff | (c >= (max - 0.006) ? (0xff << 24) : (0x40 << 24)) | (c >= (max - 0.006) ? (0x10 << 16) : (0x33 << 16)) | (c >= (max - 0.006) ? (0x10 << 8) : (0xc9 << 8)) )
+
+#define CHARGE_TO_COLOR(c, full, max)																    \
+	    (0x000000ff |																	    \
+	    (c > full ? (c >= (max - 0.006) ? (0xff << 24) : (((uint8_t)(((1.0 - (max - c) / (max - full))) * 0x5f) + 0xa0) << 24)) : (0x40 << 24) )   |	    \
+	    (c > full ? (c >= (max - 0.006) ? (0x10 << 16) : (((uint8_t)(((1.0 - (max - c) / (max - full))) * 0x40) + 0x10) << 16)) : (0x33 << 16) )   |	    \
+	    (c > full ? (c >= (max - 0.006) ? (0x10 << 8)  : (((uint8_t)((0.0 + ((max - c) / (max - full))) * 0xc0) + 0x30) << 8))  : (0xc9 << 8)  ) )
+
 #define TEMP_TO_COLOR(temp)	((0x000000ff) | ((0xff & (uint8_t)((temp / MAX_COOLER_TEMP) * 255)) << 24) | (0x20 << 0x10) | ((temp >= MAX_COOLER_TEMP ? 0x30 : 0x80) << 8))
 
 #define POWER_TAP_DEST_STRING "Thrusters;Shields;Weapons"
@@ -64,7 +70,8 @@ typedef enum {
 
 #define MAX_BAT_CHARGE 100.0
 
-static const float cap_max_charges[] = {10.0, 20.0, 50.0}; /* Indexed by capacitor_size_e */
+static const float cap_max_charges[] = {15.0, 30.0, 70.0}; /* Indexed by capacitor_size_e */
+static const float cap_full_limits[] = {5.0, 10.0, 20.0}; /* cap_max_charges - max_full is "full" */
 static const float cap_grade_chrg_rate[] = {1.0, 2.0, 3.0}; /* Indexed by capacitor_grade_e */
 static const float cap_grade_dmg_factor[] = {3.0, 2.0, 1.0}; /* Indexed by capacitor_grade_e */
 
@@ -84,6 +91,7 @@ typedef struct capacitor_s
     float		health;
     float		charge;
     float		max_charge;
+    float		full_limit;
 
 
     capacitor_grade_e	grade;
@@ -229,6 +237,7 @@ static void randomize_drains(void)
 void draw_gui(void)
 {
     float	gui_value;
+    float	f;
     int		c;
     bool	input_power_changed = false;
     capacitor_grade_e last_grade;
@@ -354,6 +363,7 @@ void draw_gui(void)
     last_size = tap_1.cap.size;
     GuiToggleGroup((Rectangle){245, 520, 80, 25}, CAPACITOR_SIZE_STRING, (int *)&tap_1.cap.size);
     tap_1.cap.max_charge = cap_max_charges[(int)tap_1.cap.size];
+    tap_1.cap.full_limit = tap_1.cap.max_charge - cap_full_limits[(int)tap_1.cap.size];
 
     GuiLabel((Rectangle){365, 500, 80, 16}, "Grade");
     last_grade = tap_1.cap.grade;
@@ -367,8 +377,10 @@ void draw_gui(void)
     c = GuiGetStyle(PROGRESSBAR, BASE_COLOR_PRESSED);
     GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, HEALTH_TO_COLOR(tap_1.cap.health));
     GuiProgressBar((Rectangle){285, 620, 110, 20}, "Health", TextFormat("%2.2f", tap_1.cap.health), &tap_1.cap.health, 0.0, 1.0);
-    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, CHARGE_TO_COLOR(tap_1.cap.charge, tap_1.cap.max_charge));
-    GuiProgressBar((Rectangle){285, 650, 110, 30}, "Charge", TextFormat("%2.2f", tap_1.cap.charge), &tap_1.cap.charge, 0.0, tap_1.cap.max_charge);
+    f = tap_1.cap.charge;
+    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, CHARGE_TO_COLOR(tap_1.cap.charge, tap_1.cap.full_limit,  tap_1.cap.max_charge));
+    GuiProgressBar((Rectangle){285, 650, 110, 30}, "Charge", TextFormat("%2.2f", f > tap_1.cap.full_limit ? tap_1.cap.full_limit : f),
+		    &f, 0.0, tap_1.cap.full_limit);
     GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, c);
 
 
@@ -382,6 +394,7 @@ void draw_gui(void)
     last_size = tap_2.cap.size;
     GuiToggleGroup((Rectangle){475, 520, 80, 25}, CAPACITOR_SIZE_STRING, (int *)&tap_2.cap.size);
     tap_2.cap.max_charge = cap_max_charges[(int)tap_2.cap.size];
+    tap_2.cap.full_limit = tap_2.cap.max_charge - cap_full_limits[(int)tap_2.cap.size];
 
     GuiLabel((Rectangle){585, 500, 80, 16}, "Grade");
     last_grade = tap_2.cap.grade;
@@ -395,8 +408,10 @@ void draw_gui(void)
     c = GuiGetStyle(PROGRESSBAR, BASE_COLOR_PRESSED);
     GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, HEALTH_TO_COLOR(tap_2.cap.health));
     GuiProgressBar((Rectangle){505, 620, 110, 20}, "Health", TextFormat("%2.2f", tap_2.cap.health), &tap_2.cap.health, 0.0, 1.0);
-    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, CHARGE_TO_COLOR(tap_2.cap.charge, tap_2.cap.max_charge));
-    GuiProgressBar((Rectangle){505, 650, 110, 30}, "Charge", TextFormat("%2.2f", tap_2.cap.charge), &tap_2.cap.charge, 0.0, tap_2.cap.max_charge);
+    f = tap_2.cap.charge;
+    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, CHARGE_TO_COLOR(tap_2.cap.charge, tap_2.cap.full_limit,  tap_2.cap.max_charge));
+    GuiProgressBar((Rectangle){505, 650, 110, 30}, "Charge", TextFormat("%2.2f", f > tap_2.cap.full_limit ? tap_2.cap.full_limit : f),
+		    &f, 0.0, tap_2.cap.full_limit);
     GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, c);
 
 
@@ -410,6 +425,7 @@ void draw_gui(void)
     last_size = tap_3.cap.size;
     GuiToggleGroup((Rectangle){695, 520, 80, 25}, CAPACITOR_SIZE_STRING, (int *)&tap_3.cap.size);
     tap_3.cap.max_charge = cap_max_charges[(int)tap_3.cap.size];
+    tap_3.cap.full_limit = tap_3.cap.max_charge - cap_full_limits[(int)tap_3.cap.size];
 
     GuiLabel((Rectangle){805, 500, 80, 16}, "Grade");
     last_grade = tap_3.cap.grade;
@@ -423,8 +439,10 @@ void draw_gui(void)
     c = GuiGetStyle(PROGRESSBAR, BASE_COLOR_PRESSED);
     GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, HEALTH_TO_COLOR(tap_3.cap.health));
     GuiProgressBar((Rectangle){725, 620, 110, 20}, "Health", TextFormat("%2.2f", tap_3.cap.health), &tap_3.cap.health, 0.0, 1.0);
-    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, CHARGE_TO_COLOR(tap_3.cap.charge, tap_3.cap.max_charge));
-    GuiProgressBar((Rectangle){725, 650, 110, 30}, "Charge", TextFormat("%2.2f", tap_3.cap.charge), &tap_3.cap.charge, 0.0, tap_3.cap.max_charge);
+    f = tap_3.cap.charge;
+    GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, CHARGE_TO_COLOR(tap_3.cap.charge,  tap_3.cap.full_limit, tap_3.cap.max_charge));
+    GuiProgressBar((Rectangle){725, 650, 110, 30}, "Charge", TextFormat("%2.2f", f > tap_3.cap.full_limit ? tap_3.cap.full_limit : f),
+		    &f, 0.0, tap_3.cap.full_limit);
     GuiSetStyle(PROGRESSBAR, BASE_COLOR_PRESSED, c);
 
 
@@ -784,6 +802,19 @@ static void drain_capacitor(power_tap_t *tap)
     float	    rate;
     int		    num_connected = 0; /* The number of drains that this tap shares */
 
+    if (tap->cap.charge > tap->cap.full_limit)
+    {
+	/* Based on grade, the capacitor charge will decay until it reaches its full limit. Higher grade capacitors will discharge more slowly. The less
+	 * charge currently feeding this tap, the more quickly it will will discharge.
+	 */
+	float decay = 0.01;
+
+	decay *= cap_grade_dmg_factor[(int)tap->cap.grade];
+	decay *= 1.0 - tap->level;
+	tap->cap.charge -= decay;
+
+    }
+
     if (tap_1.drain == tap->drain && tap_1.cap.charge > 0) num_connected++;
     if (tap_2.drain == tap->drain && tap_2.cap.charge > 0) num_connected++;
     if (tap_3.drain == tap->drain && tap_3.cap.charge > 0) num_connected++;
@@ -806,9 +837,6 @@ static void drain_capacitor(power_tap_t *tap)
 
 }
 
-/* TODO: Tweak power drains to not drain so quickly from the capacitors */
-/* TODO: Give capacitors over-charge limits so that they can stay at or above their max charge by a certain level/voltage before incuring damage
- *	 Even short periods of not fully charging drastically reduced damage potential */
 /* TODO: Implement power delivered progress bars below Power Usage (change to Power Requested) to show how much power is actually getting to the
  *	 thrusters/shields/weapons. Make it so that power delivered is less if it's coming from batteries. */
 /* TODO: Add a route to battery option for the power taps */
