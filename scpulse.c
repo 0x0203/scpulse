@@ -575,7 +575,6 @@ static void cooler_dissipate_heat(void)
 static void update_engine_heat(void)
 {
     float f;
-    /* FIXME: When engine stops, still need to add head from capacitors */
     f = waveforms.rootwave_vol;
 
     f += POWER_TO_TEMP(waveforms.qwave_vol) * 0.4;
@@ -583,7 +582,7 @@ static void update_engine_heat(void)
     f += POWER_TO_TEMP(waveforms.swave_vol) * 0.2;
 
     f *= waveforms.rootwave_vol;
-    cooler_add_heat(f/8);
+    cooler_add_heat(f/12);
     cooler_dissipate_heat();
     if (cooler_temp > MAX_COOLER_TEMP)
     {
@@ -771,13 +770,13 @@ static void fill_capacitor(power_tap_t *tap, float strength)
 	cooler_add_heat(0.1 * (tap->cap.charge / tap->cap.max_charge) * f);
 }
 
-static void drain_battery(power_tap_t *tap)
+static void drain_battery(power_drain_t *d, float pct)
 {
-    tap_bat.cap.charge -= (tap->drain->rate * tap->drain->factor);
-    cooler_add_heat(tap->drain->rate * 8.3);
+    tap_bat.cap.charge -= (d->rate * d->factor * pct);
+    cooler_add_heat(d->rate * 4.3 * pct);
     if (tap_bat.cap.charge < 0)
     {
-	tap->drain->enabled = 0;
+	d->enabled = 0;
 	tap_bat.cap.charge = 0;
     }
 }
@@ -795,7 +794,7 @@ static void drain_capacitor(power_tap_t *tap)
 	/* Based on grade, the capacitor charge will decay until it reaches its full limit. Higher grade capacitors will discharge more slowly. The less
 	 * charge currently feeding this tap, the more quickly it will will discharge.
 	 */
-	float decay = 0.01;
+	float decay = 0.009;
 
 	decay *= cap_grade_dmg_factor[(int)tap->cap.grade];
 	decay *= 1.0 - tap->level;
@@ -810,12 +809,18 @@ static void drain_capacitor(power_tap_t *tap)
     if (num_connected == 0)
     {
 	/* Drain battery instead */
-	drain_battery(tap);
+	drain_battery(tap->drain, 1.0);
     }
     else
     {
+	float diff;
 	rate = d->rate / num_connected;
 	rate *= d->factor;
+	if (rate > tap->cap.charge)
+	{
+	    diff = rate - tap->cap.charge;
+	    drain_battery(tap->drain, diff/rate);
+	}
 	tap->cap.charge -= rate;
 	if (tap->cap.charge < 0)
 	    tap->cap.charge = 0;
@@ -824,7 +829,7 @@ static void drain_capacitor(power_tap_t *tap)
     }
 
 }
-
+/* TODO: Fix issue where over-charging a consumer grade capacitor is harder than a military grade */
 /* TODO: Implement power delivered progress bars below Power Usage (change to Power Requested) to show how much power is actually getting to the
  *	 thrusters/shields/weapons. Make it so that power delivered is less if it's coming from batteries. */
 /* TODO: Add a route to battery option for the power taps */
@@ -835,6 +840,19 @@ static void update_capacitors(void)
     drain_capacitor(&tap_1);
     drain_capacitor(&tap_2);
     drain_capacitor(&tap_3);
+
+    if (tap_1.drain != &drain_shields && tap_2.drain != &drain_shields && tap_3.drain != &drain_shields)
+    {
+	drain_battery(&drain_shields, 1.0);
+    }
+    if (tap_1.drain != &drain_weapons && tap_2.drain != &drain_weapons && tap_3.drain != &drain_weapons)
+    {
+	drain_battery(&drain_weapons, 1.0);
+    }
+    if (tap_1.drain != &drain_thrust && tap_2.drain != &drain_thrust && tap_3.drain != &drain_thrust)
+    {
+	drain_battery(&drain_thrust, 1.0);
+    }
 
     fill_capacitor(&tap_1, 0.1);
     fill_capacitor(&tap_2, 0.2);
