@@ -112,7 +112,6 @@ typedef struct power_tap_s
     capacitor_t	    cap; /* The amount of power available for the drain is stored in the capacitor */
     power_drain_t   *drain;
 
-    /* TODO: The power taps should be implemented such that power tap 1 at 100% power adds less power to its capacitor than tap 2 at 100%. Same for 2 and 3 */
     float	    charge_mult;
 
     /* Gui data */
@@ -265,7 +264,6 @@ void draw_gui(void)
     GuiLabel((Rectangle){950, 70, 70, 24}, TextFormat("%2.2f L/s", fuel_level >= MAX_FUEL_LEVEL ? 0.0 : fuel_rate));
 
     /* ================== Input Power ================ */
-    /* FIXME: Make conversion functions that convert the percentages and raw frequencies to the display values */
     GuiGroupBox((Rectangle){ 120, 120, 100, 255 }, "Input Power");
     gui_value = GuiVerticalSliderBar((Rectangle){ 155, 150, 34, 192 }, "Amps", TextFormat("%4.0f", waveforms.rootwave_vol * 1675), waveforms.rootwave_vol, 0.0f, 1.0f);
     if (gui_value != waveforms.rootwave_vol)
@@ -289,7 +287,6 @@ void draw_gui(void)
     gui_value = GuiVerticalSliderBar((Rectangle){ 320, 150, 34, 192 }, "Power", TextFormat("%0.2f", waveforms.qwave_vol), waveforms.qwave_vol, 0.0f, 1.0f);
     if (input_power_changed || gui_value != waveforms.qwave_vol)
     {
-	/* TODO: The more power on each ring, the heat generation goes up exponentially */
 	waveforms.qwave_vol = gui_value;
 	set_q_power(waveforms.qwave_vol * waveforms.rootwave_vol);
     }
@@ -739,10 +736,6 @@ static void update_power_taps(void)
     tap_2.drain = tap_sel_to_drain(tap_2.selected_dest);
     tap_3.drain = tap_sel_to_drain(tap_3.selected_dest);
 
-    /* FIXME: What was this for? */
-    if (!tap_1.drain || !tap_2.drain || !tap_3.drain)
-	return;
-
     return;
 }
 
@@ -835,7 +828,6 @@ static void drain_capacitor(power_tap_t *tap)
 /* TODO: Implement power delivered progress bars below Power Usage (change to Power Requested) to show how much power is actually getting to the
  *	 thrusters/shields/weapons. Make it so that power delivered is less if it's coming from batteries. */
 /* TODO: Add a route to battery option for the power taps */
-/* TODO: Check over temp applies damage */
 /* TODO: Tune and balance */
 
 static void update_capacitors(void)
