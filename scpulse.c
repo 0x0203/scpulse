@@ -1,4 +1,8 @@
+#ifdef __EMSCRIPTEN__
+#include <raylib_web.h>
+#else
 #include <raylib.h>
+#endif
 #include <stdio.h>
 #include <string.h>
 #include <stddef.h>
@@ -12,6 +16,10 @@
 
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
+
+#ifdef __EMSCRIPTEN__
+#include <style_cyber.h>
+#endif
 
 //#define MY_SAMPLE_RATE 48000
 #define MY_SAMPLE_RATE 44100
@@ -746,6 +754,11 @@ static void fill_capacitor(power_tap_t *tap, float strength)
     int i;
     float f = tap->level * cap_grade_dmg_factor[(int)tap->cap.grade];
 
+/* TODO: Fix issue where over-charging a consumer grade capacitor is harder than a military grade */
+
+    if (tap->cap.charge > tap->cap.full_limit)
+	strength *= (4 * cap_grade_dmg_factor[(int)tap->cap.grade]);
+
     if (tap->cap.health > 0)
     {
 	tap->cap.charge +=  strength *
@@ -794,11 +807,13 @@ static void drain_capacitor(power_tap_t *tap)
 	/* Based on grade, the capacitor charge will decay until it reaches its full limit. Higher grade capacitors will discharge more slowly. The less
 	 * charge currently feeding this tap, the more quickly it will will discharge.
 	 */
-	float decay = 0.009;
+	float decay = 0.1;
 
 	decay *= cap_grade_dmg_factor[(int)tap->cap.grade];
 	decay *= 1.0 - tap->level;
 	tap->cap.charge -= decay;
+	if (tap->cap.charge < tap->cap.full_limit)
+	    tap->cap.charge = tap->cap.full_limit;
 
     }
 
@@ -829,7 +844,6 @@ static void drain_capacitor(power_tap_t *tap)
     }
 
 }
-/* TODO: Fix issue where over-charging a consumer grade capacitor is harder than a military grade */
 /* TODO: Implement power delivered progress bars below Power Usage (change to Power Requested) to show how much power is actually getting to the
  *	 thrusters/shields/weapons. Make it so that power delivered is less if it's coming from batteries. */
 /* TODO: Add a route to battery option for the power taps */
@@ -865,6 +879,22 @@ static void update_battery(void)
     tap_bat.cap.charge += 0.03 * (tap_bat.level / MAX_BAT_CHARGE);
     if (tap_bat.cap.charge > MAX_BAT_CHARGE)
 	tap_bat.cap.charge = MAX_BAT_CHARGE;
+}
+
+void main_loop__em()
+{
+
+	draw_gui();
+
+
+	update_engine();
+	update_fuel();
+	update_drains();
+	update_power_taps();
+	update_battery();
+	update_capacitors();
+	update_engine_heat();
+
 }
 
 int main(int argc, char *argv[])
@@ -922,7 +952,6 @@ int main(int argc, char *argv[])
 	return -1;
     }
 
-    ma_device_start(&device);
 
 
     waveforms.rootwave_cfg = ma_waveform_config_init(device.playback.format, device.playback.channels,
@@ -943,6 +972,7 @@ int main(int argc, char *argv[])
     ma_waveform_init(&waveforms.rwave_cfg, &waveforms.rwave);
     ma_waveform_init(&waveforms.swave_cfg, &waveforms.swave);
 
+    ma_device_start(&device);
 
 
 #if 0
@@ -1016,28 +1046,23 @@ int main(int argc, char *argv[])
     drain_thrust.enabled = false;
     randomize_drains();
 
+
+#ifdef __EMSCRIPTEN__
+    GuiLoadStyleCyber();
+    emscripten_set_main_loop(main_loop__em, 0, 1);
+#else
+
     GuiLoadStyle(GUI_THEME_RGS);
+
     while (!WindowShouldClose() && !quitting)
     {
 	float frame_time;
-
-
-	draw_gui();
-
-
-	update_engine();
-	update_fuel();
-	update_drains();
-	update_power_taps();
-	update_battery();
-	update_capacitors();
-	update_engine_heat();
-
-	{
-	}
+	main_loop__em();
 
 	usleep(16666);
     }
+#endif
+
     CloseWindow();
 
     ma_device_stop(&device);
