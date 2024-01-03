@@ -754,10 +754,8 @@ static void fill_capacitor(power_tap_t *tap, float strength)
     int i;
     float f = tap->level * cap_grade_dmg_factor[(int)tap->cap.grade];
 
-/* TODO: Fix issue where over-charging a consumer grade capacitor is harder than a military grade */
-
     if (tap->cap.charge > tap->cap.full_limit)
-	strength *= (4 * cap_grade_dmg_factor[(int)tap->cap.grade]);
+	strength *= (2 * cap_grade_dmg_factor[(int)tap->cap.grade]);
 
     if (tap->cap.health > 0)
     {
@@ -810,8 +808,10 @@ static void drain_capacitor(power_tap_t *tap)
 	float decay = 0.1;
 
 	decay *= cap_grade_dmg_factor[(int)tap->cap.grade];
-	decay *= 1.0 - tap->level;
-	tap->cap.charge -= decay;
+	if (tap->level <= 0)
+	    tap->cap.charge -= decay;
+	//decay *= 1.0 - tap->level;
+	//tap->cap.charge -= decay;
 	if (tap->cap.charge < tap->cap.full_limit)
 	    tap->cap.charge = tap->cap.full_limit;
 
@@ -870,7 +870,7 @@ static void update_capacitors(void)
 
     fill_capacitor(&tap_1, 0.1);
     fill_capacitor(&tap_2, 0.2);
-    fill_capacitor(&tap_3, 0.3);
+    fill_capacitor(&tap_3, 0.6);
 
 }
 
