@@ -162,11 +162,10 @@ static sine_sources_t waveforms;
 volatile float cooler_temp;
 static float fuel_level;
 static float fuel_rate;
-static float quantum_level;
+//static float quantum_level;
 static float total_output_power;
 static float engine_health;
 static bool engine_overload;
-static bool update_waveforms;
 
 static power_tap_t tap_bat;
 static power_tap_t tap_1;
@@ -194,10 +193,12 @@ static void capacitor_reset(capacitor_t *cap)
 
 }
 
+#if 0
 static void set_root_freq(float freq)
 {
     ma_waveform_set_frequency(&waveforms.rootwave, freq);
 }
+#endif
 
 static void set_root_power(float power)
 {
@@ -513,10 +514,6 @@ void data_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_uin
     float	    *output;
     int		    i;
     float	    max_signal = 0;
-    float	    tap_battery;
-    float	    tap_1;
-    float	    tap_2;
-    float	    tap_3;
 
     srcs = (sine_sources_t *)pDevice->pUserData;
     output = (float *)pOutput;
@@ -748,10 +745,6 @@ static void update_power_taps(void)
 
 static void fill_capacitor(power_tap_t *tap, float strength)
 {
-    float avg;
-    int index;
-    int max;
-    int i;
     float f = tap->level * cap_grade_dmg_factor[(int)tap->cap.grade];
 
     if (tap->cap.charge > tap->cap.full_limit)
@@ -906,9 +899,11 @@ int main(int argc, char *argv[])
     ma_engine_config engine_config;
     ma_engine engine;
 
+#if 0
     ma_sound snd_clank_s;
     ma_sound snd_clank_m;
     ma_sound snd_clank_l;
+#endif
 
     ma_result res;
 
