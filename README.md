@@ -3,7 +3,7 @@
 
 This is a proof-of-concept demonstration for an engine management idea I had for the game Star Citizen. It is an audio driven simulation where the parameters of the audio being played change the resulting sound of the engine, which in turn change how the power is managed for the simulated ship systems. 
 
-A playable demo can be found at [https://0x0203.github.io/scpulse_web.html](https://0x0203.github.io/scpulse_web.html). Running on a desktop browser is recommended. It is **not** intended to be mobile friendly, so may or may not work on phones/tablets. Given the sound frequencies being used, you will most likely need headphones to hear the audio if running from a mobile platform.
+A playable demo can be found at [https://0x0203.github.io/scpulse/scpulse_web.html](https://0x0203.github.io/scpulse/scpulse_web.html). Running on a desktop browser is recommended. It is **not** intended to be mobile friendly, so may or may not work on phones/tablets. Given the sound frequencies being used, you will most likely need headphones to hear the audio if running from a mobile platform.
 
 #### Core Ideas
 
