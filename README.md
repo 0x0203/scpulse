@@ -76,6 +76,6 @@ This project was only compiled for linux desktop (Xorg only; no wayland) and for
 
 The unique portions of this project (scpulse.c and the makefile) are provided with no restrictions. Do with them as you wish. 
 
-Raylib, Raygui and the custom vertical slider gui controls come directly from their respective projects and are licensed accordingly (an unmodified zlib/libpng license). See their project pages linked above for details.
+Raylib, Raygui and the custom vertical slider gui controls come directly from their respective projects and are licensed accordingly (an unmodified zlib/libpng license). See [Raylib licence](https://github.com/raysan5/raylib/blob/master/LICENSE) and [Raygui licence](https://github.com/raysan5/raygui/blob/master/LICENSE) for details.
 
-Miniaudio is licenced according to it's original license (public domain or MIT No Attribution). See their project page linked above for details.
+Miniaudio is licenced according to it's original license (public domain or MIT No Attribution). See their [project page](https://github.com/mackron/miniaudio/blob/master/LICENSE) for details.
